@@ -429,7 +429,7 @@ func TestDarwinWatcherColdArchiveCardinalityUsesOneRecursiveStream(t *testing.T)
 			require.NoError(t, err)
 			var appendBatch WatchBatch
 			observedBeforeClose := false
-			observationTimer := time.NewTimer(750 * time.Millisecond)
+			observationTimer := time.NewTimer(750 * time.Millisecond) //nolint:kennlint // absence check; the window only records whether the open append surfaces before close, and either outcome passes
 		observeOpenAppend:
 			for {
 				select {
@@ -1291,7 +1291,7 @@ func TestDarwinWatcherNativeCallbackDoesNotWaitForLifecycleLock(t *testing.T) {
 		assert.Zero(t, lifecycleCalls.Load(),
 			"native delivery must only signal deferred lifecycle work")
 		backend.mu.Unlock()
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(watcherTestTimeout):
 		backend.mu.Unlock()
 		require.FailNow(t, "native callback waited for lifecycle ownership")
 	}

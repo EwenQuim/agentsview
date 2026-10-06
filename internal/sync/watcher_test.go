@@ -2139,14 +2139,7 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 	nestedPath := filepath.Join(subdir, "nested.jsonl")
 	require.NoError(t, os.WriteFile(nestedPath, []byte("nested"), 0o644))
 
-	require.Eventually(t, func() bool {
-		select {
-		case paths := <-pathsCh:
-			return slices.Contains(paths, nestedPath)
-		default:
-			return false
-		}
-	}, watcherTestTimeout, 10*time.Millisecond, "timed out waiting for nested file change")
+	waitForPath(t, pathsCh, nestedPath)
 }
 
 func TestWatcherStopIsClean(t *testing.T) {
@@ -2516,15 +2509,7 @@ func TestWatcherShallowParentDoesNotShadowRecursiveChild(t *testing.T) {
 	sessionFile := filepath.Join(dateDir, "rollout.jsonl")
 	require.NoError(t, os.WriteFile(sessionFile, []byte("x"), 0o644))
 
-	require.Eventually(t, func() bool {
-		select {
-		case paths := <-pathsCh:
-			return slices.Contains(paths, sessionFile)
-		default:
-			return false
-		}
-	}, watcherTestTimeout, 10*time.Millisecond,
-		"file in a new date dir under the recursive child must trigger onChange")
+	waitForPath(t, pathsCh, sessionFile)
 }
 
 func TestWatchRecursive_RootUnderExcludedAncestorStillWatchesDescendants(t *testing.T) {

@@ -27,6 +27,8 @@ The kit `deadlinetest` analyzer, run by `kennlint` in `make lint` and `make lint
 
 Mark a site `//nolint:kennlint // reason` only when the asserted result is the deadline or cancellation expiring, or when a `select` on a timer shows that an event does not happen. The reason names which case applies and what holds the wait.
 
+The check sees only the `fts5` test files each lint run compiles: Linux and Windows in full, and on macOS only the packages the macOS job lints. It skips short positive `Never` windows, which cannot fail.
+
 ## Frontend and End-to-End Tests
 
 - Keep frontend unit tests beside the code in `*.test.ts` files.
