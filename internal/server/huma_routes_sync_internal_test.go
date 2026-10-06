@@ -1990,7 +1990,7 @@ func TestRunRemoteSyncRequestSerializesNoSyncRemoteWrites(t *testing.T) {
 	select {
 	case <-exclusiveEntered:
 		assert.Fail(t, "exclusive operation overlapped remote sync")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; the held remote sync keeps the exclusive operation out
 	}
 
 	close(releaseRemote)

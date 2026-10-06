@@ -295,7 +295,7 @@ func TestExtractSchedulerPassHoldsIdleWorkLease(t *testing.T) {
 	select {
 	case <-idled:
 		require.FailNow(t, "daemon idled out while an extraction pass was in flight")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond): //nolint:kennlint // absence check; the blocked extraction pass keeps the daemon from idling
 	}
 	mgr.releaseOnce()
 	select {

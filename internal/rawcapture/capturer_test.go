@@ -270,7 +270,7 @@ func TestConcurrentCapturesDoNotDiscardAnotherCaptureSharedObject(t *testing.T) 
 		first := <-outcomeA
 		require.Error(t, first.err)
 		close(releaseB)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond): //nolint:kennlint // absence check; capture A's held directory sync may keep B from reaching commit
 		close(releaseA)
 		first := <-outcomeA
 		require.Error(t, first.err)

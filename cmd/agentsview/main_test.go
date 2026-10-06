@@ -851,7 +851,7 @@ func TestRemoteHostSyncFuncSerializesWithEngineExclusiveLock(t *testing.T) {
 	select {
 	case <-exclusiveEntered:
 		assert.Fail(t, "exclusive operation overlapped scheduled remote sync")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; the held remote sync keeps the exclusive operation out
 	}
 
 	close(releaseRemote)
@@ -1091,7 +1091,7 @@ func TestStartRemoteHostSync_TracksRemoteWorkForIdleReaper(t *testing.T) {
 	select {
 	case <-idleFired:
 		require.FailNow(t, "idle tracker fired while remote sync was active")
-	case <-time.After(80 * time.Millisecond):
+	case <-time.After(80 * time.Millisecond): //nolint:kennlint // absence check; the held remote sync keeps the idle tracker from firing
 	}
 
 	close(releaseSync)

@@ -190,7 +190,7 @@ func TestEmbeddingsBuildHoldsIdleLeaseUntilManagerCompletes(t *testing.T) {
 	select {
 	case <-idled:
 		require.Fail(t, "daemon idled while an API-started embedding build was active")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond): //nolint:kennlint // absence check; the active embedding build keeps the daemon from idling
 	}
 	complete()
 	select {

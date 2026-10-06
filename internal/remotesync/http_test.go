@@ -2662,7 +2662,7 @@ func TestHTTPSyncHoldsMirrorLockDuringManifestFetch(t *testing.T) {
 	remote.onManifest = func() {
 		// assert, not require: this runs on the server goroutine, where
 		// FailNow must not be called.
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the sync holds the mirror lock, so only the context ends the acquire
 		defer cancel()
 		lock, err := AcquireMirrorLock(ctx, mirrorRoot)
 		if lock != nil {
@@ -2774,7 +2774,7 @@ func TestPreparedHTTPSyncContributorKeepsLockUntilClose(t *testing.T) {
 	case <-time.After(backgroundWaitTimeout):
 		require.FailNow(t, "timed out waiting for contributor")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the prepared source holds the mirror lock, so only the context ends the acquire
 	competing, lockErr := AcquireMirrorLock(ctx, prepared.Root())
 	cancel()
 	if competing != nil {
@@ -3454,7 +3454,7 @@ func assertDuplicateCanonicalLockIdentity(t *testing.T, dataDirA, dataDirB strin
 	remote.onManifest = func() { manifestRequests++ }
 	syncs := []HTTPSync{syncB, syncA}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 750*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), backgroundWaitTimeout)
 	defer cancel()
 	prepared, err := PrepareHTTPSyncs(ctx, syncs)
 	require.Error(t, err)
@@ -3515,7 +3515,7 @@ func TestPreparedHTTPSyncsHoldAllLocksUntilClose(t *testing.T) {
 	})
 
 	for _, host := range []string{"host-a", "host-b"} {
-		lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+		lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the borrowed options hold the mirror lock, so only the context ends the acquire
 		competing, lockErr := AcquireMirrorLock(
 			lockCtx, MirrorDir(dataDir, host),
 		)
@@ -3565,7 +3565,7 @@ func TestPreparedHTTPSyncsBorrowBlocksCloseUntilRelease(t *testing.T) {
 	_, _, err = prepared.BorrowRebuildOptions(t.Context())
 	require.ErrorIs(t, err, ErrPreparedClosed,
 		"a Close attempt ends new borrowing while retained ownership remains retryable")
-	lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+	lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the borrowed options hold the mirror lock, so only the context ends the acquire
 	competing, lockErr := AcquireMirrorLock(lockCtx, MirrorDir(dataDir, hs.Host))
 	cancel()
 	if competing != nil {
@@ -4249,7 +4249,7 @@ func setPortableTempDir(t *testing.T, dir string) {
 
 func assertMirrorLocked(t *testing.T, mirrorRoot string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the caller holds the mirror lock, so only the context ends the acquire
 	defer cancel()
 	lock, err := AcquireMirrorLock(ctx, mirrorRoot)
 	if lock != nil {

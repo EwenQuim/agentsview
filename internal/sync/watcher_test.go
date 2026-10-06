@@ -79,7 +79,7 @@ func TestWatcherAcknowledgesLifecycleOnlyAfterSuccessfulReconciliation(t *testin
 	select {
 	case generation := <-gate.acknowledged:
 		require.Fail(t, "failed reconciliation acknowledged lifecycle", generation)
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; the failed reconciliation must not acknowledge the lifecycle
 	}
 	second := requireReceiveWithin(t, calls, time.Second)
 	assert.Equal(t, []string{"/sync"}, second.ReconcileRoots)
@@ -206,7 +206,7 @@ func TestWatcherLifecycleStoppedRejectsCollectionAndDispatch(t *testing.T) {
 	select {
 	case batch := <-calls:
 		require.Fail(t, "stopped watcher dispatched a batch", "%+v", batch)
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; a stopped watcher must never dispatch
 	}
 }
 
@@ -895,7 +895,7 @@ func TestWatcherSustainedWritesProgress(t *testing.T) {
 		case err := <-writeErr:
 			require.NoError(t, err)
 			return watcherCall{}
-		case <-time.After(minInterval + dispatchTolerance):
+		case <-time.After(watcherTestTimeout):
 			require.FailNow(t, "continuous writes starved the watcher callback")
 			return watcherCall{}
 		}
@@ -2024,7 +2024,7 @@ func TestWatcherStopCancelsPendingCallback(t *testing.T) {
 	select {
 	case batch := <-calls:
 		require.FailNowf(t, "test failed", "callback ran after Stop with batch %+v", batch)
-	case <-time.After(350 * time.Millisecond):
+	case <-time.After(350 * time.Millisecond): //nolint:kennlint // absence check; a stopped watcher must never run the callback
 	}
 }
 
@@ -2067,7 +2067,7 @@ func TestWatcherStopWaitsForRunningCallbackAndDiscardsPending(t *testing.T) {
 	select {
 	case <-stopped:
 		require.FailNow(t, "Stop returned before the running callback completed")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; the running callback keeps Stop waiting
 	}
 
 	releaseCallback()
@@ -2139,19 +2139,14 @@ func TestWatcherAutoWatchesNewDirs(t *testing.T) {
 	nestedPath := filepath.Join(subdir, "nested.jsonl")
 	require.NoError(t, os.WriteFile(nestedPath, []byte("nested"), 0o644))
 
-	deadline := time.Now().Add(5 * time.Second)
-	found := false
-	for time.Now().Before(deadline) && !found {
+	require.Eventually(t, func() bool {
 		select {
 		case paths := <-pathsCh:
-			if slices.Contains(paths, nestedPath) {
-				found = true
-			}
-		case <-time.After(50 * time.Millisecond):
+			return slices.Contains(paths, nestedPath)
+		default:
+			return false
 		}
-	}
-
-	require.True(t, found, "timed out waiting for nested file change")
+	}, watcherTestTimeout, 10*time.Millisecond, "timed out waiting for nested file change")
 }
 
 func TestWatcherStopIsClean(t *testing.T) {
@@ -2185,7 +2180,7 @@ func TestWatcherLifecycleStopBeforeStartReturns(t *testing.T) {
 
 	select {
 	case <-stopped:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(watcherTestTimeout):
 		require.FailNow(t, "Stop blocked before Start")
 	}
 	w.Start()
@@ -2220,7 +2215,7 @@ func TestWatcherLifecycleStartFailureReturnsErrorAndDegradesRegisteredScopes(t *
 		requireReceiveWithin(t, degraded, time.Second))
 	select {
 	case <-backend.stopped:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(watcherTestTimeout):
 		require.FailNow(t, "failed Start did not stop its backend")
 	}
 	w.Stop()
@@ -2353,7 +2348,7 @@ func TestWatcherIgnoresNonWriteCreate(t *testing.T) {
 	select {
 	case <-pathsCh:
 		require.FailNow(t, "onChange called for chmod event, expected it to be ignored")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond): //nolint:kennlint // absence check; a chmod must never schedule a callback
 		// Success
 	}
 }
@@ -2477,7 +2472,7 @@ func TestWatcherShallowRootDoesNotAutoWatchNewDirs(t *testing.T) {
 	case paths := <-pathsCh:
 		assert.Contains(t, paths, localDir,
 			"root-level create should still trigger onChange")
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(watcherTestTimeout):
 		require.FailNow(t, "timed out waiting for shallow root create event")
 	}
 
@@ -2521,18 +2516,14 @@ func TestWatcherShallowParentDoesNotShadowRecursiveChild(t *testing.T) {
 	sessionFile := filepath.Join(dateDir, "rollout.jsonl")
 	require.NoError(t, os.WriteFile(sessionFile, []byte("x"), 0o644))
 
-	deadline := time.Now().Add(5 * time.Second)
-	found := false
-	for time.Now().Before(deadline) && !found {
+	require.Eventually(t, func() bool {
 		select {
 		case paths := <-pathsCh:
-			if slices.Contains(paths, sessionFile) {
-				found = true
-			}
-		case <-time.After(50 * time.Millisecond):
+			return slices.Contains(paths, sessionFile)
+		default:
+			return false
 		}
-	}
-	require.True(t, found,
+	}, watcherTestTimeout, 10*time.Millisecond,
 		"file in a new date dir under the recursive child must trigger onChange")
 }
 
@@ -2610,7 +2601,7 @@ func TestWatcherExcludedCreateDir_DoesNotTriggerOnChange(t *testing.T) {
 	case paths := <-pathsCh:
 		assert.NotContains(t, paths, gitDir,
 			"excluded directory create should not trigger onChange")
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(250 * time.Millisecond): //nolint:kennlint // absence check; an excluded directory create must never schedule a callback
 		// Expected: no callback for excluded dir creation.
 	}
 }

@@ -1225,7 +1225,7 @@ func TestExtractMutationsWaitForDBMutex(t *testing.T) {
 				d.mu.Unlock()
 				require.Fail(t, "mutation completed while db.mu was held; "+
 					"CloseConnections relies on db.mu to quiesce writes")
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond): //nolint:kennlint // absence check; the held db.mu keeps the mutation waiting
 			}
 			d.mu.Unlock()
 			require.NoError(t, <-done)

@@ -121,7 +121,7 @@ func TestAcquireMirrorLockIsExclusive(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lock.Close() })
 
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the first lock is held, so only the context ends the acquire
 	defer cancel()
 	_, err = AcquireMirrorLock(ctx, root)
 	require.Error(t, err)
@@ -146,7 +146,7 @@ func TestAcquireMirrorLockCanonicalizesSymlinkedParent(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lock.Close() })
 
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the real-path lock is held, so only the context ends the acquire
 	aliasLock, err := AcquireMirrorLock(ctx, aliasRoot)
 	cancel()
 	if aliasLock != nil {

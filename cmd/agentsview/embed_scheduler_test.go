@@ -257,7 +257,7 @@ func TestEmbedSchedulerBuildsHoldIdleWorkLease(t *testing.T) {
 			select {
 			case <-idled:
 				require.Fail(t, "daemon idled while an embedding build was in flight")
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(200 * time.Millisecond): //nolint:kennlint // absence check; the blocked embedding build keeps the daemon from idling
 			}
 			mgr.releaseOnce()
 			select {

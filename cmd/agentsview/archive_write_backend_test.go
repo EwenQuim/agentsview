@@ -990,7 +990,7 @@ func TestDaemonPGPushWatchSuppressesRepeatedOpenCodeSHMOnlyBatches(t *testing.T)
 		case reason := <-pushes:
 			require.Failf(t, "SHM-only batches must not schedule a push",
 				"received %q", reason)
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(50 * time.Millisecond): //nolint:kennlint // absence check; an SHM-only batch must never schedule a push
 		}
 	}
 	pending, _ := pushLoopPendingState(loop)

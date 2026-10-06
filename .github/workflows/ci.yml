@@ -68,7 +68,7 @@ jobs:
 
       - name: Run Go linters
         if: matrix.linter == 'golangci'
-        run: make lint-config-check lint-sql check-timing-budgets lint-golangci-ci
+        run: make lint-config-check lint-sql lint-golangci-ci
 
       - name: Run NilAway
         if: matrix.linter == 'nilaway'

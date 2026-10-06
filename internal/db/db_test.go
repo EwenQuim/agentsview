@@ -5146,7 +5146,7 @@ func TestReopenDoesNotBlockNewReadsWhileClosingRetiredPool(t *testing.T) {
 	select {
 	case err := <-readDone:
 		require.NoError(t, err, "new read while closing retired pool")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		require.Fail(t, "new read blocked while Reopen closed a retired pool")
 	}
 
@@ -5200,7 +5200,7 @@ func TestCloseConnectionsWaitsForInFlightReads(t *testing.T) {
 	case err := <-closeDone:
 		require.Failf(t, "CloseConnections returned early",
 			"returned while rows were still open: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(150 * time.Millisecond): //nolint:kennlint // absence check; the open rows keep CloseConnections waiting
 	}
 
 	require.NoError(t, rows.Err(), "rows.Err")
@@ -5251,7 +5251,7 @@ func TestCloseConnectionsBlocksConcurrentReopen(t *testing.T) {
 	case err := <-reopenDone:
 		require.Failf(t, "Reopen returned early",
 			"returned while CloseConnections was draining: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(150 * time.Millisecond): //nolint:kennlint // absence check; the open rows keep the drain, and so Reopen, waiting
 	}
 
 	require.NoError(t, rows.Err(), "rows.Err")
@@ -5293,7 +5293,7 @@ func TestCloseWriterWaitsForInFlightWriterQuery(t *testing.T) {
 	case err := <-closeDone:
 		require.Failf(t, "CloseWriter returned early",
 			"returned while writer rows were still open: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(150 * time.Millisecond): //nolint:kennlint // absence check; the open writer rows keep CloseWriter waiting
 	}
 
 	require.NoError(t, rows.Err(), "rows.Err")

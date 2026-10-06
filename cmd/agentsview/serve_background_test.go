@@ -1152,7 +1152,7 @@ func TestWaitForBackgroundServeReadyAttachedObservesProgressWithoutTimeout(
 	select {
 	case err := <-errCh:
 		require.FailNowf(t, "attached readiness wait returned at legacy timeout", "%v", err)
-	case <-time.After(40 * time.Millisecond):
+	case <-time.After(40 * time.Millisecond): //nolint:kennlint // absence check; the attached wait must outlast its 20ms legacy timeout while no runtime file exists
 	}
 
 	host, port := testPingServer(t)

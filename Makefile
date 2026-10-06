@@ -36,7 +36,7 @@ AIR_BIN := $(shell if command -v air >/dev/null 2>&1; then command -v air; \
 	elif [ -x "$(GOPATH_FIRST)/bin/air" ]; then printf "%s" "$(GOPATH_FIRST)/bin/air"; \
 	fi)
 
-.PHONY: build build-release install install-cjk-fts simple-fts frontend frontend-dev dev check-air air-install desktop-dev desktop-build desktop-macos-app desktop-macos-dmg desktop-windows-installer desktop-linux-appimage desktop-app docs-install docs-build docs-serve docs-check docs-screenshots docs-assets-branch docs-generated-assets-branch docs-deploy-staging docs-deploy test test-short test-evalingest bench-backends bench-gate bench-gate-config bench-pg-usage test-postgres test-postgres-ci test-s3 postgres-up postgres-down test-clickhouse test-clickhouse-ci clickhouse-up clickhouse-down e2e e2e-duckdb memory-e2e vet lint lint-ci lint-golangci lint-golangci-ci nilaway nilaway-golangci-build lint-tools tidy clean release release-darwin-arm64 release-darwin-amd64 release-linux-amd64 install-hooks ensure-embed-dir pricing-snapshot sqlite-vec-header dev-snapshot help check-timing-budgets
+.PHONY: build build-release install install-cjk-fts simple-fts frontend frontend-dev dev check-air air-install desktop-dev desktop-build desktop-macos-app desktop-macos-dmg desktop-windows-installer desktop-linux-appimage desktop-app docs-install docs-build docs-serve docs-check docs-screenshots docs-assets-branch docs-generated-assets-branch docs-deploy-staging docs-deploy test test-short test-evalingest bench-backends bench-gate bench-gate-config bench-pg-usage test-postgres test-postgres-ci test-s3 postgres-up postgres-down test-clickhouse test-clickhouse-ci clickhouse-up clickhouse-down e2e e2e-duckdb memory-e2e vet lint lint-ci lint-golangci lint-golangci-ci nilaway nilaway-golangci-build lint-tools tidy clean release release-darwin-arm64 release-darwin-amd64 release-linux-amd64 install-hooks ensure-embed-dir pricing-snapshot sqlite-vec-header dev-snapshot help
 
 # Ensure go:embed has at least one file (no-op if frontend is built)
 ensure-embed-dir:
@@ -471,15 +471,12 @@ MEMORY_E2E_ARGS ?=
 memory-e2e: pricing-snapshot ensure-embed-dir
 	go run ./scripts/memory-e2e --live $(MEMORY_E2E_ARGS)
 
-check-timing-budgets:
-	go run ./scripts/check-timing-budgets .
-
 # Vet
 vet: pricing-snapshot ensure-embed-dir
 	go vet -tags fts5 ./...
 
 # Lint Go code and auto-fix where possible (local development)
-lint: lint-config-check lint-sql check-timing-budgets lint-golangci nilaway
+lint: lint-config-check lint-sql lint-golangci nilaway
 
 # Run golangci-lint with auto-fixes for local development.
 lint-golangci: pricing-snapshot ensure-embed-dir nilaway-golangci-build
@@ -490,7 +487,7 @@ lint-golangci: pricing-snapshot ensure-embed-dir nilaway-golangci-build
 	$(CUSTOM_GCL) run --fix ./...
 
 # Lint Go code without fixing (for CI)
-lint-ci: lint-config-check lint-sql check-timing-budgets lint-golangci-ci nilaway
+lint-ci: lint-config-check lint-sql lint-golangci-ci nilaway
 
 # Run golangci-lint without auto-fixes for CI.
 lint-golangci-ci: pricing-snapshot ensure-embed-dir nilaway-golangci-build
@@ -714,7 +711,6 @@ help:
 	@echo "  e2e-duckdb     - Run DuckDB-backed Playwright smoke tests"
 	@echo "  memory-e2e     - Run opt-in Claude Code and Codex memory recall gate"
 	@echo "  vet            - Run go vet"
-	@echo "  check-timing-budgets - Reject unallowed literal polling budgets below 1s"
 	@echo "  lint           - Run golangci-lint and NilAway (auto-fix golangci issues)"
 	@echo "  lint-ci        - Run golangci-lint and NilAway (no fix, for CI)"
 	@echo "  lint-golangci  - Run golangci-lint with auto-fix"
