@@ -5181,44 +5181,6 @@ func TestRepeatedReopenBoundsRetiredPools(t *testing.T) {
 	assert.NotNil(t, s, "session s1 missing after repeated Reopen")
 }
 
-func TestCloseConnectionsWaitsForInFlightReads(t *testing.T) {
-	d := testDB(t)
-	insertSession(t, d, "s1", "proj")
-
-	rows, err := d.Reader().Query(t.Context(), "SELECT id FROM sessions")
-	require.NoError(t, err, "Query")
-	defer rows.Close()
-
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- d.CloseConnections(t.Context()) }()
-
-	// The open rows hold a reader connection with a live file
-	// handle. CloseConnections promises the database file can be
-	// renamed afterwards, which fails on Windows while any handle
-	// survives, so it must not return before the rows are released.
-	select {
-	case err := <-closeDone:
-		require.Failf(t, "CloseConnections returned early",
-			"returned while rows were still open: %v", err)
-	case <-time.After(150 * time.Millisecond): //nolint:kennlint // absence check; the open rows keep CloseConnections waiting
-	}
-
-	require.NoError(t, rows.Err(), "rows.Err")
-	require.NoError(t, rows.Close(), "rows.Close")
-
-	select {
-	case err := <-closeDone:
-		require.NoError(t, err, "CloseConnections")
-	case <-time.After(2 * time.Second):
-		require.Fail(t, "CloseConnections did not return after rows were released")
-	}
-
-	require.NoError(t, d.Reopen(), "Reopen")
-	s, err := d.GetSession(t.Context(), "s1")
-	require.NoError(t, err, "GetSession after Reopen")
-	assert.NotNil(t, s, "session s1 missing after Reopen")
-}
-
 func TestCloseConnectionsBlocksConcurrentReopen(t *testing.T) {
 	d := testDB(t)
 	insertSession(t, d, "s1", "proj")
@@ -5244,10 +5206,16 @@ func TestCloseConnectionsBlocksConcurrentReopen(t *testing.T) {
 	reopenDone := make(chan error, 1)
 	go func() { reopenDone <- d.Reopen() }()
 
-	// Reopen must serialize behind the drain: fresh handles opened
-	// mid-drain would let CloseConnections return while the database
-	// file is still unrenameable on Windows.
+	// The open rows hold a reader connection with a live file handle.
+	// CloseConnections promises the database file can be renamed
+	// afterwards, which fails on Windows while any handle survives, so it
+	// must not return before the rows are released. Reopen must serialize
+	// behind the drain, since fresh handles opened mid-drain would break
+	// the same promise.
 	select {
+	case err := <-closeDone:
+		require.Failf(t, "CloseConnections returned early",
+			"returned while rows were still open: %v", err)
 	case err := <-reopenDone:
 		require.Failf(t, "Reopen returned early",
 			"returned while CloseConnections was draining: %v", err)

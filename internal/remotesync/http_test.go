@@ -2774,13 +2774,8 @@ func TestPreparedHTTPSyncContributorKeepsLockUntilClose(t *testing.T) {
 	case <-time.After(backgroundWaitTimeout):
 		require.FailNow(t, "timed out waiting for contributor")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the prepared source holds the mirror lock, so only the context ends the acquire
-	competing, lockErr := AcquireMirrorLock(ctx, prepared.Root())
-	cancel()
-	if competing != nil {
-		require.NoError(t, competing.Close())
-	}
-	require.Error(t, lockErr, "prepared source must retain its lock during contribution")
+	// The prepared source must retain its lock during contribution.
+	assertMirrorLocked(t, prepared.Root())
 	close(continueContributor)
 	select {
 	case result := <-rebuilt:
@@ -3514,19 +3509,16 @@ func TestPreparedHTTPSyncsHoldAllLocksUntilClose(t *testing.T) {
 		options.Contributors[0].Name, options.Contributors[1].Name,
 	})
 
+	require.ErrorIs(t, prepared.Close(), ErrPreparedInUse)
+	_, _, err = prepared.BorrowRebuildOptions(t.Context())
+	require.ErrorIs(t, err, ErrPreparedClosed,
+		"a Close attempt ends new borrowing while retained ownership remains retryable")
+	// All mirror locks stay held while borrowed, even after a refused Close.
 	for _, host := range []string{"host-a", "host-b"} {
-		lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the borrowed options hold the mirror lock, so only the context ends the acquire
-		competing, lockErr := AcquireMirrorLock(
-			lockCtx, MirrorDir(dataDir, host),
-		)
-		cancel()
-		if competing != nil {
-			require.NoError(t, competing.Close())
-		}
-		require.Error(t, lockErr,
-			"all mirror locks remain held across earlier contributor work")
+		assertMirrorLocked(t, MirrorDir(dataDir, host))
 	}
 
+	release()
 	release()
 	require.NoError(t, prepared.Close())
 	for _, host := range []string{"host-a", "host-b"} {
@@ -3542,48 +3534,6 @@ func TestPreparedHTTPSyncsHoldAllLocksUntilClose(t *testing.T) {
 	_, _, err = prepared.BorrowRebuildOptions(t.Context())
 	require.ErrorIs(t, err, ErrPreparedClosed,
 		"closed aggregate cannot expose contributors")
-}
-
-func TestPreparedHTTPSyncsBorrowBlocksCloseUntilRelease(t *testing.T) {
-	remote := newMirrorTestRemote(t)
-	remote.writeSession(t, "borrow.jsonl",
-		time.Date(2026, 7, 11, 15, 30, 0, 0, time.UTC), "borrowed")
-	dataDir := t.TempDir()
-	_, hs := newMirrorSync(t, remote, dataDir)
-	prepared, err := PrepareHTTPSyncs(t.Context(), []HTTPSync{hs})
-	require.NoError(t, err)
-	options, release, err := prepared.BorrowRebuildOptions(t.Context())
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		release()
-		require.NoError(t, prepared.Close())
-	})
-	require.Len(t, options.Contributors, 1)
-	assert.Equal(t, hs.Host, options.Contributors[0].Name)
-
-	require.ErrorIs(t, prepared.Close(), ErrPreparedInUse)
-	_, _, err = prepared.BorrowRebuildOptions(t.Context())
-	require.ErrorIs(t, err, ErrPreparedClosed,
-		"a Close attempt ends new borrowing while retained ownership remains retryable")
-	lockCtx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the borrowed options hold the mirror lock, so only the context ends the acquire
-	competing, lockErr := AcquireMirrorLock(lockCtx, MirrorDir(dataDir, hs.Host))
-	cancel()
-	if competing != nil {
-		require.NoError(t, competing.Close())
-	}
-	require.Error(t, lockErr, "borrowed Close must retain its mirror lock")
-
-	release()
-	release()
-	require.NoError(t, prepared.Close())
-	lockCtx, cancel = context.WithTimeout(t.Context(), time.Second)
-	competing, lockErr = AcquireMirrorLock(lockCtx, MirrorDir(dataDir, hs.Host))
-	cancel()
-	require.NoError(t, lockErr)
-	require.NotNil(t, competing)
-	require.NoError(t, competing.Close())
-	_, _, err = prepared.BorrowRebuildOptions(lockCtx)
-	require.ErrorIs(t, err, ErrPreparedClosed)
 }
 
 func TestPreparedHTTPSyncsBorrowAndCloseAreRaceSafe(t *testing.T) {

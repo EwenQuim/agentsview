@@ -2122,26 +2122,6 @@ func TestWatcherCallsOnChange(t *testing.T) {
 	}
 }
 
-func TestWatcherAutoWatchesNewDirs(t *testing.T) {
-	pathsCh := make(chan []string, 10)
-
-	_, dir := startTestWatcher(t, func(paths []string) {
-		pathsCh <- paths
-	})
-
-	subdir := filepath.Join(dir, "newdir")
-	require.NoError(t, os.Mkdir(subdir, 0o755))
-
-	// Delivery of the directory create means the backend has completed its
-	// auto-watch decision before handing the event to the scheduler.
-	waitForPath(t, pathsCh, subdir)
-
-	nestedPath := filepath.Join(subdir, "nested.jsonl")
-	require.NoError(t, os.WriteFile(nestedPath, []byte("nested"), 0o644))
-
-	waitForPath(t, pathsCh, nestedPath)
-}
-
 func TestWatcherStopIsClean(t *testing.T) {
 	w, _ := startTestWatcherNoCleanup(t, func(_ []string) {}, 50*time.Millisecond)
 
@@ -2438,7 +2418,18 @@ func TestWatcherAutoWatchesNewDirs_RespectsExcludes(t *testing.T) {
 	require.NoError(t, os.Mkdir(gitDir, 0o755), "Mkdir(.git)")
 	barrier := filepath.Join(root, "included-barrier")
 	require.NoError(t, os.Mkdir(barrier, 0o755), "Mkdir(barrier)")
-	waitForPath(t, pathsCh, barrier)
+	deadline := time.NewTimer(watcherTestTimeout)
+	defer deadline.Stop()
+	for reached := false; !reached; {
+		select {
+		case paths := <-pathsCh:
+			assert.NotContains(t, paths, gitDir,
+				"excluded directory create should not trigger onChange")
+			reached = slices.Contains(paths, barrier)
+		case <-deadline.C:
+			require.FailNow(t, "timed out waiting for the included barrier")
+		}
+	}
 
 	fileInGit := filepath.Join(gitDir, "config")
 	require.NoError(t, os.WriteFile(fileInGit, []byte("x"), 0o644))
@@ -2564,31 +2555,6 @@ func TestWatchRecursive_OverlappingRoots_UsesMostSpecificRoot(t *testing.T) {
 	assert.Equal(t, 2, nestedWatched,
 		"the nested root and descendant should use the nested exclusion scope")
 	assert.Zero(t, nestedUnwatched)
-}
-
-func TestWatcherExcludedCreateDir_DoesNotTriggerOnChange(t *testing.T) {
-	pathsCh := make(chan []string, 10)
-	w, err := NewWatcher(20*time.Millisecond, func(batch WatchBatch) {
-		pathsCh <- batch.Paths
-	}, []string{".git"})
-	require.NoError(t, err, "NewWatcher")
-	t.Cleanup(func() { w.Stop() })
-
-	root := t.TempDir()
-	_, _, err = w.WatchRecursive(root)
-	require.NoError(t, err, "WatchRecursive")
-	w.Start()
-
-	gitDir := filepath.Join(root, ".git")
-	require.NoError(t, os.Mkdir(gitDir, 0o755), "Mkdir(.git)")
-
-	select {
-	case paths := <-pathsCh:
-		assert.NotContains(t, paths, gitDir,
-			"excluded directory create should not trigger onChange")
-	case <-time.After(250 * time.Millisecond): //nolint:kennlint // absence check; an excluded directory create must never schedule a callback
-		// Expected: no callback for excluded dir creation.
-	}
 }
 
 func TestNewWatcher_NilOnChange(t *testing.T) {
