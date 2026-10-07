@@ -213,6 +213,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "thinking it through", messages[1].ThinkingText)
 	assert.Equal(t, "mistral-medium-3.5", messages[1].Model)
 	assert.Equal(t, RoleAssistant, messages[2].Role)
+	assert.Equal(t, "effect-1", messages[2].SourceUUID)
 	assert.Equal(t, "mistral-medium-3.5", messages[2].Model)
 	assert.True(t, messages[2].HasThinking)
 	assert.Equal(t, "checking the files", messages[2].ThinkingText)
@@ -360,9 +361,21 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
-			name:       "output text takes precedence",
+			name:       "output content takes precedence",
 			before:     `"state":{"output":`,
 			after:      `"state":{"outputText":"direct output","output":`,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+		},
+		{
+			name:       "text and resource",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"output":{"content":[{"type":"text","text":"text output"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}],"type":"success"},"outputText":"text output","status":"completed"}`,
+			wantResult: "text output\nresource output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+		},
+		{
+			name:       "output text without output",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"outputText":"direct output","status":"completed"}`,
 			wantResult: "direct output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
@@ -397,6 +410,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			parsed := outcome.Results[0].Result
 			require.Len(t, parsed.Messages, tc.wantMessages)
 			call := parsed.Messages[tc.wantMessages-1]
+			assert.Equal(t, "effect-1", call.SourceUUID)
 			assert.Equal(t, "mistral-medium-3.5", call.Model)
 			assert.Equal(t, tc.wantThinking, call.ThinkingText)
 			assert.Equal(t, tc.wantZeroTime, call.Timestamp.IsZero())
