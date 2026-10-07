@@ -250,7 +250,7 @@ func vibeFingerprintSource(src singleFileSource) (SourceFingerprint, error) {
 func vibeParseFile(
 	src singleFileSource, req ParseRequest,
 ) ([]ParseResult, []string, error) {
-	sess, msgs, usageEvents, err := parseVibeSession(src.Path, req.Machine)
+	sess, msgs, usageEvents, err := parseVibeSession(src.Path, "", req.Machine)
 	if err != nil {
 		return nil, nil, err
 	}

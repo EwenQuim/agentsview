@@ -132,11 +132,10 @@ func vibeIsUnifiedAnchor(path string) bool {
 		filepath.Base(filepath.Dir(filepath.Dir(path))) == "unified"
 }
 
-// vibeUnifiedSessionDirFromRel maps a root-relative path under
-// unified/<session-id>/ back to its session directory.
+// vibeUnifiedSessionDirFromRel maps CURRENT and meta.json to their session directory.
 func vibeUnifiedSessionDirFromRel(rel, root string) (string, bool) {
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) < 2 || parts[0] != "unified" {
+	if len(parts) != 3 || parts[0] != "unified" || (parts[2] != "CURRENT" && parts[2] != "meta.json") {
 		return "", false
 	}
 	return filepath.Join(filepath.Clean(root), "unified", parts[1]), true
@@ -372,7 +371,23 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 			content = literal
 		}
 	}
-	var text string
+	text := vibeUnifiedContentText(content)
+	msg := ParsedMessage{
+		Role:          RoleType(entry.Role),
+		Content:       text,
+		ContentLength: len(text),
+		SourceUUID:    entry.ID,
+	}
+	if entry.CreatedAt > 0 {
+		msg.Timestamp = time.UnixMilli(entry.CreatedAt)
+	}
+	if entry.Role != "user" && entry.Role != "assistant" {
+		msg.IsSystem = true
+	}
+	return msg
+}
+
+func vibeUnifiedContentText(content gjson.Result) string {
 	if content.IsArray() {
 		var parts []string
 		for _, block := range content.Array() {
@@ -387,24 +402,9 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 				parts = append(parts, firstNonEmptyJSONLString(block.Get("text").Str, block.Get("result").Str))
 			}
 		}
-		text = strings.Join(parts, "")
-	} else {
-		text = decodeContent(content)
+		return strings.Join(parts, "")
 	}
-
-	msg := ParsedMessage{
-		Role:          RoleType(entry.Role),
-		Content:       text,
-		ContentLength: len(text),
-		SourceUUID:    entry.ID,
-	}
-	if entry.CreatedAt > 0 {
-		msg.Timestamp = time.UnixMilli(entry.CreatedAt)
-	}
-	if entry.Role != "user" && entry.Role != "assistant" {
-		msg.IsSystem = true
-	}
-	return msg
+	return decodeContent(content)
 }
 
 // Execution events carry output for running and terminal effects.
@@ -449,7 +449,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 	if entry.State != nil {
 		resultText = entry.State.OutputText
 		if resultText == "" && entry.State.Output != nil {
-			resultText = DecodeContent(string(entry.State.Output.Content))
+			resultText = vibeUnifiedContentText(gjson.Parse(string(entry.State.Output.Content)))
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
 	}
@@ -471,8 +471,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 			return call, nil
 		}
 	}
-	carrier := vibeToolResultCarrier(ordinal+1, entry.ID, resultText)
-	return call, &carrier
+	return call, nil
 }
 
 func readVibeUnifiedDoc(genDir, name string, v any) error {
@@ -516,7 +515,7 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 		filepath.Join(sessionDir, "meta.json"),
 	} {
 		info, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
+		if filepath.Base(path) == "meta.json" && errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
