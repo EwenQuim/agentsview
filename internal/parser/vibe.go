@@ -198,7 +198,6 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 	lr := newLineReader(file, maxLineSize)
 	defer releaseLineReader(lr)
 	messageOrdinal := 0
-	var firstUserContent string
 
 	for {
 		line, ok := lr.next()
@@ -250,14 +249,6 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 		msg, _ := convertVibeMessage(vibeMsg, messageOrdinal, sessionModel)
 		result.Messages = append(result.Messages, msg)
 
-		// Track first user message content for session metadata. Skip
-		// system/injected context so it never becomes the session's first
-		// message.
-		if firstUserContent == "" && msg.Role == RoleUser &&
-			!msg.IsSystem && msg.Content != "" {
-			firstUserContent = msg.Content
-		}
-
 		messageOrdinal++
 	}
 
@@ -265,20 +256,7 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 		return result, fmt.Errorf("failed to read Vibe session file: %w", err)
 	}
 
-	// Set session metadata from messages
-	if len(result.Messages) > 0 {
-		result.Session.MessageCount = len(result.Messages)
-		result.Session.FirstMessage = firstUserContent
-	}
-
-	// Count real user messages, excluding system/injected context and the
-	// empty tool-result carrier messages emitted for "tool" records (which
-	// carry RoleUser to satisfy pairToolResults).
-	for _, msg := range result.Messages {
-		if msg.Role == RoleUser && !msg.IsSystem && len(msg.ToolResults) == 0 {
-			result.Session.UserMessageCount++
-		}
-	}
+	setVibeMessageMetadata(&result)
 
 	// Create usage events from session stats if we have stats, a model, and any token data
 	if hasMetaData && sessionModel != "" {
@@ -291,6 +269,18 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 	}
 
 	return result, nil
+}
+
+func setVibeMessageMetadata(result *ParseResult) {
+	result.Session.MessageCount = len(result.Messages)
+	for _, msg := range result.Messages {
+		if msg.Role == RoleUser && !msg.IsSystem && len(msg.ToolResults) == 0 {
+			result.Session.UserMessageCount++
+			if result.Session.FirstMessage == "" && msg.Content != "" {
+				result.Session.FirstMessage = msg.Content
+			}
+		}
+	}
 }
 
 // parseVibeMetadata parses the meta.json file for session-level metadata

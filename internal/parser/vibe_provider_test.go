@@ -12,7 +12,7 @@ import (
 
 func TestVibeProviderSourceMethods(t *testing.T) {
 	root := t.TempDir()
-	sessionDir := "session_20260613_123456_abc123def"
+	sessionDir := "session_20260613_123456_uuid-123"
 	messagesPath := filepath.Join(root, sessionDir, "messages.jsonl")
 	metaPath := filepath.Join(root, sessionDir, "meta.json")
 	writeSourceFile(t, messagesPath, vibeProviderMessagesFixture("provider question"))
