@@ -24,15 +24,7 @@ The latest release is
   results. Subagent runs appear as child sessions. Usage reports include Muse
   token counts, priced at Meta's published Muse Spark and Muse Wonder rates.
   (#2241)
-- Mistral Vibe sessions under `~/.vibe/logs/session/unified` sync again,
-  with transcripts, thinking, tool calls and result text, child-session links,
-  context size, and daily token usage. The whole session uses its last pinned
-  model, then `config.toml` `active_model`, then `mistral-medium-3.5`. A config
-  edit reprices only sessions reparsed afterward. Discarded stream tails are
-  skipped, and context size comes from `contextUsage` input plus output tokens.
-  Imported and forked history is skipped when the parent source is available.
-  Otherwise, the full history stays visible until the parent arrives and the
-  session is reparsed. A turn still running appears once it finishes.
+- Mistral Vibe sessions sync again with transcripts, tool outcomes, and token usage.
 - Browse and search the retained archive during full parser and archive-only
   preservation rebuilds with a stale warning; archive writes fail with a retryable
   503. Scoped upgrades and schema repairs finish before serving.
