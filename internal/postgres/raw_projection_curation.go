@@ -103,12 +103,11 @@ func (s *RawProjectionStore) SetCuration(ctx context.Context, alias, field strin
 }
 
 func (s *RawProjectionStore) publishRawCuration(ctx context.Context, tx *sql.Tx, group string) error {
-	var revision int64
-	err := tx.QueryRowContext(ctx, `UPDATE raw_corpus_state SET corpus_revision=corpus_revision+1 WHERE singleton=1 RETURNING corpus_revision`).Scan(&revision)
+	changes, err := s.materializeGroup(ctx, tx, group)
 	if err != nil {
 		return err
 	}
-	return s.materializeGroup(ctx, tx, group, revision)
+	return publishRawRevision(ctx, tx, false, changes)
 }
 
 type rawOverlays map[string]map[string]jsontext.Value
