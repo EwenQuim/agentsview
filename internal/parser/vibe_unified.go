@@ -337,16 +337,13 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 			thinkingCreatedAt = entry.CreatedAt
 			thinking += entry.Text
 		case "effect":
-			call, carrier := vibeUnifiedEffectMessages(entry, len(messages))
+			call := vibeUnifiedEffectMessages(entry, len(messages))
 			if call != nil {
 				call.Model = model
 				call.ThinkingText = thinking
 				call.HasThinking = call.ThinkingText != ""
 				thinking = ""
 				messages = append(messages, *call)
-			}
-			if carrier != nil {
-				messages = append(messages, *carrier)
 			}
 		}
 	}
@@ -371,7 +368,7 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 			content = literal
 		}
 	}
-	text := vibeUnifiedContentText(content)
+	text := vibeUnifiedContentText(content, "")
 	msg := ParsedMessage{
 		Role:          RoleType(entry.Role),
 		Content:       text,
@@ -387,7 +384,7 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 	return msg
 }
 
-func vibeUnifiedContentText(content gjson.Result) string {
+func vibeUnifiedContentText(content gjson.Result, separator string) string {
 	if content.IsArray() {
 		var parts []string
 		for _, block := range content.Array() {
@@ -402,22 +399,22 @@ func vibeUnifiedContentText(content gjson.Result) string {
 				parts = append(parts, firstNonEmptyJSONLString(block.Get("text").Str, block.Get("result").Str))
 			}
 		}
-		return strings.Join(parts, "")
+		return strings.Join(parts, separator)
 	}
 	return decodeContent(content)
 }
 
 // Execution events carry output for running and terminal effects.
-func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMessage, *ParsedMessage) {
+func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessage {
 	if entry.ID == "" || entry.Detail == nil {
-		return nil, nil
+		return nil
 	}
 	toolName := entry.Detail.ToolName
 	if toolName == "" {
 		toolName = entry.Detail.Kind
 	}
 	if toolName == "" {
-		return nil, nil
+		return nil
 	}
 	inputJSON := string(entry.Detail.Input)
 	if inputJSON == "" || strings.TrimSpace(inputJSON) == "null" {
@@ -428,6 +425,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		Ordinal:    ordinal,
 		Role:       RoleAssistant,
 		HasToolUse: true,
+		SourceUUID: entry.ID,
 		ToolCalls: []ParsedToolCall{{
 			ToolUseID: entry.ID,
 			ToolName:  toolName,
@@ -447,11 +445,10 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 
 	resultText := ""
 	if entry.State != nil {
-		resultText = entry.State.OutputText
-		if resultText == "" && entry.State.Output != nil {
-			resultText = vibeUnifiedContentText(gjson.Parse(string(entry.State.Output.Content)))
+		if entry.State.Output != nil {
+			resultText = vibeUnifiedContentText(gjson.Parse(string(entry.State.Output.Content)), "\n")
 		}
-		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
+		resultText = firstNonEmptyJSONLString(resultText, entry.State.OutputText, entry.State.Reason, entry.State.Error.Message)
 	}
 	if entry.State != nil {
 		status := entry.State.Status
@@ -468,10 +465,10 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 				{ToolUseID: entry.ID, Source: "tool_execution", Status: "started", Timestamp: call.Timestamp},
 				event,
 			}
-			return call, nil
+			return call
 		}
 	}
-	return call, nil
+	return call
 }
 
 func readVibeUnifiedDoc(genDir, name string, v any) error {

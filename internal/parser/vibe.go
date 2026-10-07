@@ -141,7 +141,21 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 			if vibeMsg.ToolCallID == "" {
 				continue
 			}
-			result.Messages = append(result.Messages, vibeToolResultCarrier(messageOrdinal, vibeMsg.ToolCallID, vibeMsg.Content))
+			quoted, err := json.Marshal(vibeMsg.Content)
+			if err != nil {
+				continue
+			}
+			result.Messages = append(result.Messages, ParsedMessage{
+				Ordinal:       messageOrdinal,
+				Role:          RoleUser,
+				Content:       "",
+				ContentLength: len(vibeMsg.Content),
+				ToolResults: []ParsedToolResult{{
+					ToolUseID:     vibeMsg.ToolCallID,
+					ContentRaw:    string(quoted),
+					ContentLength: len(vibeMsg.Content),
+				}},
+			})
 			messageOrdinal++
 			continue
 		}
@@ -170,20 +184,6 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 	}
 
 	return result, nil
-}
-
-func vibeToolResultCarrier(ordinal int, toolUseID, text string) ParsedMessage {
-	quoted, _ := json.Marshal(text)
-	return ParsedMessage{
-		Ordinal:       ordinal,
-		Role:          RoleUser,
-		ContentLength: len(text),
-		ToolResults: []ParsedToolResult{{
-			ToolUseID:     toolUseID,
-			ContentRaw:    string(quoted),
-			ContentLength: len(text),
-		}},
-	}
 }
 
 func applyVibeMetadata(result *ParseResult, dir string) (string, VibeStats, bool, error) {
