@@ -3569,9 +3569,14 @@ schemas keep their existing ordering behavior.
   including across user or steering messages. A turn change or the end of
   history flushes unmatched reasoning as a thinking-only assistant message,
   timestamped with the last reasoning entry's positive `createdAt`.
+  Image and audio blocks display `[image]` and `[audio]`; resources display their
+  text or `[resource]`. User messages prefer the literal `userDisplayContent`
+  copied from `vibe.userDisplayContent` metadata over expanded skill text.
+  Notice and checkpoint entries leave pending reasoning in its turn.
   Effect results use output text, decoded content, `state.reason`, then
-  `state.error.message`. Terminal effects emit result events with `updatedAt`
-  as their timestamp. Failed and skipped effects use `errored`, cancelled
+  `state.error.message`. Terminal effects emit `tool_execution` start events at
+  `createdAt` and terminal events with output at `updatedAt`, without duplicate
+  result carriers. Failed and skipped effects use `errored`, cancelled
   effects use `cancelled`, and completed effects use `completed`.
   Reverified against `_projection.py` at the unified-storage commit above
   on 2026-10-07.
@@ -3591,7 +3596,8 @@ schemas keep their existing ordering behavior.
   and forks skip entries whose IDs start with `imported-` when the parent source
   resolves across the configured Vibe roots. Legacy parent lookup uses the same
   tolerant identity parse as ingestion. Unified parents require a `CURRENT`
-  pointer that resolves to a generation with a readable manifest. Otherwise,
+  pointer that resolves to a generation with readable, decodable manifest,
+  projection-state and runtime-state documents. Otherwise,
   imports and forks keep all entries and request a reparse until the parent
   arrives. Reverified against `_fork.py` at the unified-storage commit
   above on 2026-10-07; `imported_entry_id` assigns the `imported-` prefix.

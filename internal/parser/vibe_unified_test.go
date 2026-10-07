@@ -71,7 +71,7 @@ func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
 		{"null chunks", `{"chunks":null}`, 2, "inline question", "inline answer"},
 		{"missing chunks", `{}`, 2, "inline question", "inline answer"},
 		{"empty chunks", `{"chunks":[]}`, 0, "", ""},
-		{"pooled chunks", `{"chunks":["cafe0001"]}`, 4, "unified question", "unified answer"},
+		{"pooled chunks", `{"chunks":["cafe0001"]}`, 3, "unified question", "unified answer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -198,7 +198,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	)
 
 	messages := result.Result.Messages
-	require.Len(t, messages, 4)
+	require.Len(t, messages, 3)
 	assert.Equal(t, RoleUser, messages[0].Role)
 	assert.Equal(t, "unified question", messages[0].Content)
 	assert.Equal(t, RoleAssistant, messages[1].Role)
@@ -215,15 +215,38 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "effect-1", messages[2].ToolCalls[0].ToolUseID)
 	assert.Equal(t, "file_system.bash", messages[2].ToolCalls[0].ToolName)
 	assert.Equal(t, "Bash", messages[2].ToolCalls[0].Category)
-	assert.Equal(t, RoleUser, messages[3].Role)
-	require.Len(t, messages[3].ToolResults, 1)
-	assert.Equal(t, "effect-1", messages[3].ToolResults[0].ToolUseID)
-	assert.Contains(t, messages[3].ToolResults[0].ContentRaw, "file-a")
+	require.Len(t, messages[2].ToolCalls[0].ResultEvents, 2)
+	assert.Equal(t, "file-a\nfile-b", messages[2].ToolCalls[0].ResultEvents[1].Content)
 	require.Len(t, result.Result.UsageEvents, 1)
 	assert.Equal(t, "mistral-medium-3.5", result.Result.UsageEvents[0].Model)
 	assert.Equal(t, 1000, result.Result.UsageEvents[0].InputTokens)
 	assert.Equal(t, 200, result.Result.UsageEvents[0].OutputTokens)
 	assert.Equal(t, 500, result.Result.UsageEvents[0].CacheReadInputTokens)
+	for _, tc := range []struct {
+		name, entry, want string
+	}{
+		{"image only", `{"content":[{"type":"image","attachment":{"source":{"kind":"inline","data":"AA=="},"alias":"image","mimeType":"image/png"}}]}`, "[image]"},
+		{"text and image", `{"content":[{"type":"text","text":"Describe "},{"type":"image","attachment":{"source":{"kind":"inline","data":"AA=="}}}]}`, "Describe [image]"},
+		{"resource only", `{"content":[{"type":"resource","resource":{"kind":"blob","uri":"file:///workspace/example.bin","blob":"AA=="}}]}`, "[resource]"},
+		{"literal skill prompt", `{"content":[{"type":"text","text":"expanded skill instructions","_meta":{"vibe.userDisplayContent":{"version":"1","host":"cli","content":[{"type":"text","text":"/review literal prompt"}]}}}]}`, "/review literal prompt"},
+		{"audio only", `{"content":[{"type":"audio","data":"AA==","mimeType":"audio/wav"}]}`, "[audio]"},
+		{"projected literal prompt", `{"content":[{"type":"text","text":"expanded skill instructions"}],"userDisplayContent":{"version":"1","host":"cli","content":[{"type":"text","text":"/review literal prompt"}]}}`, "/review literal prompt"},
+		{"literal empty prompt", `{"content":[{"type":"text","text":"expanded skill instructions"}],"userDisplayContent":{"version":"1","host":"cli","content":[]}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := strings.TrimSuffix(tc.entry, "}") + `,"type":"message","role":"user","id":"prompt"}`
+			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), "["+entry+"]")
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			parsed := outcome.Results[0].Result
+			require.Len(t, parsed.Messages, 1)
+			assert.Equal(t, tc.want, parsed.Messages[0].Content)
+			assert.Equal(t, len(tc.want), parsed.Messages[0].ContentLength)
+			assert.Equal(t, tc.want, parsed.Session.FirstMessage)
+			assert.Equal(t, 1, parsed.Session.UserMessageCount)
+		})
+	}
 	for _, tc := range []struct {
 		name         string
 		before       string
@@ -240,89 +263,89 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		{
 			name:   "effect without timestamp",
 			before: `"createdAt":1790601808027`, after: `"createdAt":0`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4, wantZeroTime: true,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantZeroTime: true,
 		},
 		{
 			name:       "skipped effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"skipped","reason":"Permission denied"}`,
-			wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 			wantStatus: "errored",
 		},
 		{
 			name:       "failed effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","error":{"message":"Command failed"},"output":{"content":[]},"outputText":""}`,
-			wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 			wantStatus: "errored",
 		},
 		{
 			name:       "failure output takes precedence",
 			before:     `"status":"completed"`,
 			after:      `"status":"failed","reason":"fallback reason","error":{"message":"fallback error"}`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 			wantStatus: "errored",
 		},
 		{
 			name:       "reason takes precedence over error",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","reason":"Stop requested","error":{"message":"fallback error"}}`,
-			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 			wantStatus: "errored",
 		},
 		{
 			name:       "failed file_system.read_file",
 			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}},"id":"effect-1","state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"detail":{"kind":"tool","toolName":"file_system.read_file","input":{"path":"missing.txt"}},"id":"effect-1","state":{"status":"failed","error":{"message":"File unavailable"}}`,
-			wantResult: "File unavailable", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 4, wantStatus: "errored",
+			wantResult: "File unavailable", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 3, wantStatus: "errored",
 		},
 		{
 			name:       "cancelled effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"cancelled","reason":"Stop requested"}`,
-			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4, wantStatus: "cancelled",
+			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantStatus: "cancelled",
 		},
 		{
 			name:       "file_system.read_file",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"file_system.read_file"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "file-a\nfile-b", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:       "skill.read",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"skill.read"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:       "process.write",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"process.write"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:      "null input",
 			before:    `"input":{"command":"ls"}`,
 			after:     `"input":null`,
-			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:      "absent input",
 			before:    `,"input":{"command":"ls"}`,
 			after:     ``,
-			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:       "output text takes precedence",
 			before:     `"state":{"output":`,
 			after:      `"state":{"outputText":"direct output","output":`,
-			wantResult: "direct output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "direct output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:       "subagent effect",
 			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}}`,
 			after:      `"detail":{"kind":"subagent","toolName":"subagent.spawn","input":{"task":"inspect files","agent":"generic"},"childSessionId":"child-session"}`,
-			wantResult: "file-a\nfile-b", wantChild: "vibe:child-session", wantCategory: "Task", wantThinking: "checking the files", wantMessages: 4,
+			wantResult: "file-a\nfile-b", wantChild: "vibe:child-session", wantCategory: "Task", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:   "user and steering preserve thinking for effect",
@@ -330,7 +353,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"createdAt":1790601808027,"detail"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
 		},
 		{
 			name:   "user and steering preserve thinking for assistant",
@@ -338,7 +361,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"content":[{"text":"unified answer"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,8 +372,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			require.Len(t, outcome.Results, 1)
 			parsed := outcome.Results[0].Result
 			require.Len(t, parsed.Messages, tc.wantMessages)
-			call := parsed.Messages[tc.wantMessages-2]
-			carrier := parsed.Messages[tc.wantMessages-1]
+			call := parsed.Messages[tc.wantMessages-1]
 			assert.Equal(t, "mistral-medium-3.5", call.Model)
 			assert.Equal(t, tc.wantThinking, call.ThinkingText)
 			assert.Equal(t, tc.wantZeroTime, call.Timestamp.IsZero())
@@ -360,10 +382,15 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			if tc.wantInput != "" {
 				assert.Equal(t, tc.wantInput, call.ToolCalls[0].InputJSON)
 			}
-			require.Len(t, carrier.ToolResults, 1)
-			assert.Equal(t, tc.wantResult, DecodeContent(carrier.ToolResults[0].ContentRaw))
-			require.Len(t, call.ToolCalls[0].ResultEvents, 1)
-			event := call.ToolCalls[0].ResultEvents[0]
+			require.Len(t, call.ToolCalls[0].ResultEvents, 2)
+			start := call.ToolCalls[0].ResultEvents[0]
+			assert.Equal(t, "tool_execution", start.Source)
+			assert.Equal(t, "effect-1", start.ToolUseID)
+			assert.Equal(t, "started", start.Status)
+			assert.Equal(t, call.Timestamp, start.Timestamp)
+			event := call.ToolCalls[0].ResultEvents[1]
+			assert.Equal(t, "tool_execution", event.Source)
+			assert.Equal(t, "effect-1", event.ToolUseID)
 			wantStatus := tc.wantStatus
 			if wantStatus == "" {
 				wantStatus = "completed"
@@ -400,6 +427,14 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			{"type":"reasoning","turnId":"turn-1","text":"committed thinking","outcome":{"type":"committed"}},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"committed answer"}],"outcome":{"type":"committed"}}]`,
 			"committed answer", "committed thinking", 1, 0,
+		},
+		{
+			"notice and checkpoint preserve turn thinking",
+			`[{"type":"reasoning","turnId":"turn-1","text":"thought"},
+			{"type":"notice","turnId":null,"message":"hook"},
+			{"type":"checkpoint","turnId":null},
+			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"answer"}]}]`,
+			"answer", "thought", 1, 0,
 		},
 		{
 			"trailing reasoning",
@@ -526,7 +561,7 @@ func TestVibeUnifiedProviderParseConfigModel(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
 			result := outcome.Results[0].Result
-			require.Len(t, result.Messages, 4)
+			require.Len(t, result.Messages, 3)
 			assert.Equal(t, "unified question", result.Messages[0].Content)
 			assert.Equal(t, "unified answer", result.Messages[1].Content)
 			assert.Equal(t, tc.wantModel, result.Messages[1].Model)
@@ -609,6 +644,10 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 		{"fork with parent in another root", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "other root", 2, RelFork},
 		{"import with malformed optional parent metadata", "root", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "optional metadata", 2, RelContinuation},
 		{"fork with broken parent CURRENT", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "broken CURRENT", 4, RelFork},
+		{"fork with missing parent projection", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "missing projection-state.json", 4, RelFork},
+		{"fork with malformed parent projection", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "malformed projection-state.json", 4, RelFork},
+		{"fork with missing parent runtime", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "missing runtime-state.json", 4, RelFork},
+		{"fork with malformed parent runtime", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "malformed runtime-state.json", 4, RelFork},
 		{"fork with missing parent manifest", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "missing manifest", 4, RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -625,6 +664,12 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 					parentDir := writeVibeUnifiedSession(t, parentRoot, "legacy-parent")
 					if tc.parentState == "broken CURRENT" {
 						writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"missing"}`)
+					}
+					if strings.HasPrefix(tc.parentState, "missing ") && tc.parentState != "missing manifest" {
+						require.NoError(t, os.Remove(filepath.Join(parentDir, "generations", "0000000000000001", strings.TrimPrefix(tc.parentState, "missing "))))
+					}
+					if strings.HasPrefix(tc.parentState, "malformed ") {
+						writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000001", strings.TrimPrefix(tc.parentState, "malformed ")), `{`)
 					}
 					if tc.parentState == "missing manifest" {
 						require.NoError(t, os.Remove(filepath.Join(parentDir, "generations", "0000000000000001", "manifest.json")))

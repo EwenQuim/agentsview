@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/tidwall/gjson"
 )
 
 // The unified harness session store (store format
@@ -88,17 +89,18 @@ type vibeUnifiedRuntimeMetadata struct {
 }
 
 type vibeUnifiedEntry struct {
-	Type      string                  `json:"type"`
-	Role      string                  `json:"role"`
-	ID        string                  `json:"id"`
-	TurnID    string                  `json:"turnId"`
-	Text      string                  `json:"text"`
-	Content   jsontext.Value          `json:"content,omitempty"`
-	CreatedAt int64                   `json:"createdAt"`
-	UpdatedAt int64                   `json:"updatedAt"`
-	Detail    *vibeUnifiedEffect      `json:"detail,omitempty"`
-	State     *vibeUnifiedEffectState `json:"state,omitempty"`
-	Outcome   struct {
+	Type               string                  `json:"type"`
+	Role               string                  `json:"role"`
+	ID                 string                  `json:"id"`
+	TurnID             string                  `json:"turnId"`
+	Text               string                  `json:"text"`
+	Content            jsontext.Value          `json:"content,omitempty"`
+	UserDisplayContent jsontext.Value          `json:"userDisplayContent,omitempty"`
+	CreatedAt          int64                   `json:"createdAt"`
+	UpdatedAt          int64                   `json:"updatedAt"`
+	Detail             *vibeUnifiedEffect      `json:"detail,omitempty"`
+	State              *vibeUnifiedEffectState `json:"state,omitempty"`
+	Outcome            struct {
 		Type string `json:"type"`
 	} `json:"outcome"`
 }
@@ -325,6 +327,9 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 		}
 	}
 	for _, entry := range entries {
+		if entry.Type == "notice" || entry.Type == "checkpoint" {
+			continue
+		}
 		if skipImported && strings.HasPrefix(entry.ID, "imported-") {
 			continue
 		}
@@ -369,7 +374,38 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 
 // vibeUnifiedEntryMessage converts a public message entry.
 func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
-	text := DecodeContent(string(entry.Content))
+	content := gjson.Parse(string(entry.Content))
+	if entry.Role == "user" {
+		display := gjson.Parse(string(entry.UserDisplayContent))
+		if !display.IsObject() {
+			for _, block := range content.Array() {
+				if meta := block.Get(`_meta.vibe\.userDisplayContent`); meta.IsObject() {
+					display = meta
+					break
+				}
+			}
+		}
+		if literal := display.Get("content"); literal.IsArray() {
+			content = literal
+		}
+	}
+	text := decodeContent(content)
+	if content.IsArray() {
+		var parts []string
+		for _, block := range content.Array() {
+			switch block.Get("type").Str {
+			case "image":
+				parts = append(parts, "[image]")
+			case "audio":
+				parts = append(parts, "[audio]")
+			case "resource", "resource_link":
+				parts = append(parts, firstNonEmptyJSONLString(block.Get("resource.text").Str, "[resource]"))
+			default:
+				parts = append(parts, firstNonEmptyJSONLString(block.Get("text").Str, block.Get("result").Str))
+			}
+		}
+		text = strings.Join(parts, "")
+	}
 
 	msg := ParsedMessage{
 		Role:          RoleType(entry.Role),
@@ -386,11 +422,7 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 	return msg
 }
 
-// vibeUnifiedEffectMessages converts an effect entry (a completed tool or
-// subagent invocation with its result) into the same two-message shape the
-// legacy parser emits: an assistant message carrying the tool call, followed
-// by an empty RoleUser carrier message whose tool result pairs back to the
-// call by ID.
+// Terminal events carry the result; unfinished effects retain a result carrier.
 func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMessage, *ParsedMessage) {
 	if entry.ID == "" || entry.Detail == nil {
 		return nil, nil
@@ -436,7 +468,6 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
 	}
-	carrier := vibeToolResultCarrier(ordinal+1, entry.ID, resultText)
 	if entry.State != nil {
 		status := entry.State.Status
 		switch status {
@@ -444,13 +475,18 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 			status = "errored"
 		}
 		if status == "completed" || status == "errored" || status == "cancelled" {
-			event := ParsedToolResultEvent{Status: status, Content: resultText}
+			event := ParsedToolResultEvent{ToolUseID: entry.ID, Source: "tool_execution", Status: status, Content: resultText}
 			if entry.UpdatedAt > 0 {
 				event.Timestamp = time.UnixMilli(entry.UpdatedAt)
 			}
-			call.ToolCalls[0].ResultEvents = append(call.ToolCalls[0].ResultEvents, event)
+			call.ToolCalls[0].ResultEvents = []ParsedToolResultEvent{
+				{ToolUseID: entry.ID, Source: "tool_execution", Status: "started", Timestamp: call.Timestamp},
+				event,
+			}
+			return call, nil
 		}
 	}
+	carrier := vibeToolResultCarrier(ordinal+1, entry.ID, resultText)
 	return call, &carrier
 }
 
