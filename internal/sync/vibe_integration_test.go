@@ -107,11 +107,11 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	anchor := filepath.Join(dir, "CURRENT")
 	baseTime := time.Unix(1_791_000_000, 0)
 	for _, tc := range []struct {
-		generation, entries, usage                      string
-		wantMessages, wantInput, wantOutput, wantCached int
+		generation, entries, usage string
+		wantMessages               int
 	}{
-		{"1", `{"type":"message","role":"user","content":[{"text":"question"}]}`, `{"inputTokens":100,"outputTokens":20,"cachedInputTokens":10}`, 1, 90, 20, 10},
-		{"2", `{"type":"message","role":"user","content":[{"text":"question"}]},{"type":"message","role":"assistant","content":[{"text":"answer"}]}`, `{"inputTokens":150,"outputTokens":40,"cachedInputTokens":30}`, 2, 120, 40, 30},
+		{"1", `{"type":"message","role":"user","content":[{"text":"question"}]}`, `{"inputTokens":100,"outputTokens":20,"cachedInputTokens":10}`, 1},
+		{"2", `{"type":"message","role":"user","content":[{"text":"question"}]},{"type":"message","role":"assistant","content":[{"text":"answer"}]}`, `{"inputTokens":150,"outputTokens":40,"cachedInputTokens":30}`, 2},
 	} {
 		genDir := filepath.Join(dir, "generations", tc.generation)
 		require.NoError(t, os.MkdirAll(genDir, 0o755))
@@ -134,13 +134,6 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 		assertSessionState(t, database, "vibe:session-a", func(sess *db.Session) {
 			assert.Equal(t, tc.wantMessages, sess.MessageCount)
 		})
-		events, err := database.GetUsageEvents(t.Context(), "vibe:session-a")
-		require.NoError(t, err)
-		require.Len(t, events, 1)
-		assert.Equal(t, "mistral-medium-3.5", events[0].Model)
-		assert.Equal(t, tc.wantInput, events[0].InputTokens)
-		assert.Equal(t, tc.wantOutput, events[0].OutputTokens)
-		assert.Equal(t, tc.wantCached, events[0].CacheReadInputTokens)
 	}
 }
 

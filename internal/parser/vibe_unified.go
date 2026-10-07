@@ -99,9 +99,6 @@ type vibeUnifiedEntry struct {
 	UpdatedAt          int64                   `json:"updatedAt"`
 	Detail             *vibeUnifiedEffect      `json:"detail,omitempty"`
 	State              *vibeUnifiedEffectState `json:"state,omitempty"`
-	Outcome            struct {
-		Type string `json:"type"`
-	} `json:"outcome"`
 }
 
 type vibeUnifiedEffect struct {
@@ -467,7 +464,6 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 				{ToolUseID: entry.ID, Source: "tool_execution", Status: "started", Timestamp: call.Timestamp},
 				event,
 			}
-			return call
 		}
 	}
 	return call
