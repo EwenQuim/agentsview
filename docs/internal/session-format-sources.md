@@ -3530,9 +3530,9 @@ schemas keep their existing ordering behavior.
   `generations/<sequence>/` snapshots; the newest generation's
   `manifest.json` lists the projection chunks that hold the public
   transcript, and `projection-state.json` carries the aggregate
-  `tokenUsage` and `contextUsage`.
-- **Evidence:** `source` for the legacy layout; `no-public-source` for the
-  unified store, whose shape is recorded from observed CLI output.
+  `tokenUsage` and `contextUsage`. The unified store shape is recorded from
+  observed CLI output, not from the pinned upstream source.
+- **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at
   `0685654a40a4035966891289065379a751a7e617`; see
   [session_logger.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/core/session/session_logger.py)

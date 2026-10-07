@@ -296,7 +296,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 		result.Session.SessionName = title
 		result.Session.SessionNamePresent = true
 	}
-	if projSession.CreatedAt > 0 && result.Session.StartedAt.IsZero() {
+	if projSession.CreatedAt > 0 && (metaErr != nil || meta.StartTime.IsZero()) {
 		result.Session.StartedAt = time.UnixMilli(projSession.CreatedAt)
 	}
 	if projSession.UpdatedAt > 0 {
