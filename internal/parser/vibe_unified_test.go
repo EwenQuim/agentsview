@@ -319,6 +319,13 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantStatus: "cancelled",
 		},
 		{
+			name:         "text and image result",
+			before:       `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
+			after:        `"content":[{"type":"text","text":"screenshot"},{"type":"image","data":"AA==","mimeType":"image/png"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
+			wantResult:   `[{"type":"text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"text","text":"resource output"}]`,
+			wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+		},
+		{
 			name:       "resource-only result",
 			before:     `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
 			after:      `"content":[{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
@@ -388,7 +395,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			name:   "user and steering preserve thinking for effect",
 			before: `{"createdAt":1790601808027,"detail"`,
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
-			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
+			{"type":"message","role":"user","source":"turn_steer","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"createdAt":1790601808027,"detail"`,
 			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
 		},
@@ -396,7 +403,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			name:   "user and steering preserve thinking for assistant",
 			before: `{"content":[{"text":"unified answer"`,
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
-			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
+			{"type":"message","role":"user","source":"turn_steer","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"content":[{"text":"unified answer"`,
 			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
 		},
@@ -434,7 +441,11 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 				wantStatus = "completed"
 			}
 			assert.Equal(t, wantStatus, event.Status)
-			assert.Equal(t, tc.wantResult, event.Content)
+			if tc.name == "text and image result" {
+				assert.JSONEq(t, tc.wantResult, event.Content)
+			} else {
+				assert.Equal(t, tc.wantResult, event.Content)
+			}
 			assert.Equal(t, int64(1790601808099), event.Timestamp.UnixMilli())
 			for _, msg := range parsed.Messages {
 				if msg.SourceUUID == "assistant-1" {
@@ -581,71 +592,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	})
 }
 
-func TestVibeUnifiedProviderParseConfigModel(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		config      string
-		pin         string
-		outsideRoot bool
-		wantModel   string
-	}{
-		{"config active model", `active_model = "devstral-2"`, "", false, "devstral-2"},
-		{"empty config", `active_model = ""`, "", false, "mistral-medium-3.5"},
-		{"missing config", "", "", false, "mistral-medium-3.5"},
-		{"malformed config", `active_model = [`, "", false, "mistral-medium-3.5"},
-		{"pin beats config", `active_model = "devstral-2"`, "mistral-large-2411", false, "mistral-large-2411"},
-		{"outside logs session", `active_model = "devstral-2"`, "", true, "mistral-medium-3.5"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			root := filepath.Join(home, "logs", "session")
-			if tc.outsideRoot {
-				root = filepath.Join(home, "logs", "custom")
-			}
-			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
-			writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), `{"config":{"active_model":"ignored-model"},"model":"ignored-model"}`)
-			writeSourceFile(t, filepath.Join(sessionDir, "generations", "0000000000000001", "runtime-state.json"), `{"session_metadata":{"active_model":"`+tc.pin+`"}}`)
-			if tc.config != "" {
-				writeSourceFile(t, filepath.Join(home, "config.toml"), tc.config)
-			}
-			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
-			require.True(t, ok)
-			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: vibeUnifiedSessionID})
-			require.NoError(t, err)
-			require.True(t, found)
-			fingerprint, err := provider.Fingerprint(t.Context(), source)
-			require.NoError(t, err)
-			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
-			require.NoError(t, err)
-			require.Len(t, outcome.Results, 1)
-			result := outcome.Results[0].Result
-			require.Len(t, result.Messages, 3)
-			assert.Equal(t, "unified question", result.Messages[0].Content)
-			assert.Equal(t, "unified answer", result.Messages[1].Content)
-			assert.Equal(t, tc.wantModel, result.Messages[1].Model)
-			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
-			require.Len(t, result.UsageEvents, 1)
-			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
-			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
-			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
-			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
-			assert.Equal(t, "vibe:"+vibeUnifiedSessionID, result.UsageEvents[0].SessionID)
-			assert.Equal(t, "session:vibe:"+vibeUnifiedSessionID, result.UsageEvents[0].DedupKey)
-			if tc.name == "config active model" {
-				writeSourceFile(t, filepath.Join(home, "config.toml"), `active_model = "mistral-medium-3.5"`)
-				updated, err := provider.Fingerprint(t.Context(), source)
-				require.NoError(t, err)
-				assert.Equal(t, fingerprint, updated)
-				outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: updated})
-				require.NoError(t, err)
-				require.Len(t, outcome.Results, 1)
-				require.Len(t, outcome.Results[0].Result.UsageEvents, 1)
-				assert.Equal(t, "mistral-medium-3.5", outcome.Results[0].Result.UsageEvents[0].Model)
-			}
-		})
-	}
-}
-
 // Subagent sessions recover identity from runtime-state when meta.json is absent.
 func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	root := t.TempDir()
@@ -685,18 +631,19 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 	for _, tc := range []struct {
-		name, kind, provenance string
-		wantRelationship       RelationshipType
+		name, kind, provenance, model string
+		wantRelationship              RelationshipType
 	}{
-		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, RelContinuation},
-		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, RelFork},
-		{"subagent", "subagent", "", RelSubagent},
+		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, "", RelContinuation},
+		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "", RelFork},
+		{"subagent", "subagent", "", "", RelSubagent},
+		{"pinned model", "subagent", "", "mistral-large-2411", RelSubagent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"}`+tc.provenance+`}`)
+			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"},"session_metadata":{"active_model":"`+tc.model+`"}`+tc.provenance+`}`)
 			writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0001.json"), `[
 				{"type":"message","id":"imported-1","role":"user","content":[{"text":"old question"}]},
 				{"type":"message","id":"imported-2","role":"assistant","content":[{"text":"old answer"}]},
@@ -722,6 +669,13 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, "old answer", result.Messages[1].Content)
 			assert.Equal(t, "new question", result.Messages[2].Content)
 			assert.Equal(t, "new answer", result.Messages[3].Content)
+			assert.Equal(t, tc.model, result.Messages[1].Model)
+			assert.Equal(t, tc.model, result.Messages[3].Model)
+			require.Len(t, result.UsageEvents, 1)
+			assert.Equal(t, tc.model, result.UsageEvents[0].Model)
+			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
+			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
+			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
 			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
 			assert.Empty(t, outcome.Results[0].RetryReason)
 		})
