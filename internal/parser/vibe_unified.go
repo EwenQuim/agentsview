@@ -92,6 +92,7 @@ type vibeUnifiedEntry struct {
 	ID                 string                  `json:"id"`
 	TurnID             string                  `json:"turnId"`
 	Text               string                  `json:"text"`
+	Summary            []string                `json:"summary,omitempty"`
 	Content            jsontext.Value          `json:"content,omitempty"`
 	UserDisplayContent jsontext.Value          `json:"userDisplayContent,omitempty"`
 	CreatedAt          int64                   `json:"createdAt"`
@@ -250,6 +251,15 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		result.Session.PeakContextTokens = contextTokens
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
+	if sessionModel == "" && isSafeSinglePathComponent(runtimeMeta.Identity.ParentSessionID) {
+		parentDir := filepath.Join(filepath.Dir(sessionDir), runtimeMeta.Identity.ParentSessionID)
+		if parentGenDir, err := vibeUnifiedGenerationDir(parentDir); err == nil {
+			var parentMeta vibeUnifiedRuntimeMetadata
+			if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err == nil {
+				sessionModel = parentMeta.SessionMetadata.ActiveModel
+			}
+		}
+	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
 		return result, err
@@ -326,7 +336,11 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 		case "reasoning":
 			thinkingTurn = entry.TurnID
 			thinkingCreatedAt = entry.CreatedAt
-			thinking += entry.Text
+			if entry.Text != "" {
+				thinking += entry.Text
+			} else {
+				thinking += strings.Join(entry.Summary, "")
+			}
 		case "effect":
 			call := vibeUnifiedEffectMessages(entry, len(messages))
 			if call != nil {

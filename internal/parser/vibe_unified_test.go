@@ -470,6 +470,12 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantTimestamp int64
 	}{
 		{
+			"summary-only reasoning",
+			`[{"type":"reasoning","turnId":"turn-1","text":"","summary":["checking", " the files"],"createdAt":1790601807938},
+			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"answer"}]}]`,
+			"answer", "checking the files", 1, 0,
+		},
+		{
 			"discarded stream tails",
 			`[{"type":"reasoning","turnId":"turn-1","text":"discarded thinking","outcome":{"type":"discarded"}},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"discarded answer"}],"outcome":{"type":"discarded"}},
@@ -599,48 +605,65 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 
 // Subagent sessions recover identity from runtime-state when meta.json is absent.
 func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
-	root := t.TempDir()
-	childID := "6f3c8f5f-244f-ec85-b81f-d2a200000000"
-	parentID := "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
-	sessionDir := writeVibeUnifiedSession(t, root, childID)
-	require.NoError(t, os.Remove(filepath.Join(sessionDir, "meta.json")))
-	genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
-		`{"identity":{"depth":1,"kind":"subagent",`+
-			`"parent_session_id":"`+parentID+`",`+
-			`"root_session_id":"`+parentID+`","session_id":"`+childID+`"},`+
-			`"session_metadata":{`+
-			`"cwd":"/Users/dev/work/my-repo"}}`)
+	for _, tc := range []struct {
+		name, parentRuntime, wantModel string
+	}{
+		{"parent recorded model", `{"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411"},
+		{"parent without model", `{"session_metadata":{}}`, ""},
+		{"missing parent", "", ""},
+		{"unreadable parent metadata", "{", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			childID := "6f3c8f5f-244f-ec85-b81f-d2a200000000"
+			parentID := "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+			sessionDir := writeVibeUnifiedSession(t, root, childID)
+			require.NoError(t, os.Remove(filepath.Join(sessionDir, "meta.json")))
+			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
+			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
+				`{"identity":{"depth":1,"kind":"subagent",`+
+					`"parent_session_id":"`+parentID+`",`+
+					`"root_session_id":"`+parentID+`","session_id":"`+childID+`"},`+
+					`"session_metadata":{`+
+					`"cwd":"/Users/dev/work/my-repo"}}`)
 
-	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
-	require.True(t, ok)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1)
-	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
-	require.NoError(t, err)
-	outcome, err := provider.Parse(t.Context(), ParseRequest{
-		Source:      sources[0],
-		Fingerprint: fingerprint,
-	})
-	require.NoError(t, err)
-	require.Len(t, outcome.Results, 1)
-	result := outcome.Results[0].Result
-	session := result.Session
+			if tc.parentRuntime != "" {
+				parentDir := writeVibeUnifiedSession(t, root, parentID)
+				writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"0000000000000002"}`)
+				writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "runtime-state.json"), tc.parentRuntime)
+			}
 
-	assert.Equal(t, "vibe:"+childID, session.ID)
-	assert.Equal(t, "vibe:"+parentID, session.ParentSessionID)
-	assert.Equal(t, RelSubagent, session.RelationshipType)
-	assert.Equal(t, "my_repo", session.Project)
-	assert.True(t, time.UnixMilli(1790601803600).Equal(session.StartedAt))
-	require.Len(t, result.Messages, 3)
-	assert.Empty(t, result.Messages[1].Model)
-	assert.Empty(t, result.Messages[2].Model)
-	require.Len(t, result.UsageEvents, 1)
-	assert.Empty(t, result.UsageEvents[0].Model)
-	assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
-	assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
-	assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+			require.True(t, ok)
+			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: childID})
+			require.NoError(t, err)
+			require.True(t, found)
+			fingerprint, err := provider.Fingerprint(t.Context(), source)
+			require.NoError(t, err)
+			outcome, err := provider.Parse(t.Context(), ParseRequest{
+				Source:      source,
+				Fingerprint: fingerprint,
+			})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			result := outcome.Results[0].Result
+			session := result.Session
+
+			assert.Equal(t, "vibe:"+childID, session.ID)
+			assert.Equal(t, "vibe:"+parentID, session.ParentSessionID)
+			assert.Equal(t, RelSubagent, session.RelationshipType)
+			assert.Equal(t, "my_repo", session.Project)
+			assert.True(t, time.UnixMilli(1790601803600).Equal(session.StartedAt))
+			require.Len(t, result.Messages, 3)
+			assert.Equal(t, tc.wantModel, result.Messages[1].Model)
+			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
+			require.Len(t, result.UsageEvents, 1)
+			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
+			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
+			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
+			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+		})
+	}
 }
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
