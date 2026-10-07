@@ -469,16 +469,10 @@ keeps its default directories.
 | Zed                   | (platform-specific, see below)                                                                                                                                   | SQLite database (`threads/threads.db`)                                                                                                                        |
 | Zencoder              | `~/.zencoder/sessions/`                                                                                                                                          | JSONL per session                                                                                                                                             |
 
-Mistral Vibe unified sessions use the last pinned model in `runtime-state.json`,
-then `active_model` from `config.toml` beside `logs`, then
-`mistral-medium-3.5`. This model labels the whole session. The config fallback
-applies only to roots ending in `logs/session`. A `config.toml` edit reprices only
-sessions reparsed afterward, including during a full resync. Discarded stream
-tails are skipped; unmatched reasoning appears as thinking-only assistant
-messages. Context size comes from `contextUsage` input plus output tokens.
-Imported and forked history is skipped when the parent source is available.
-Otherwise, Agentsview keeps the full history and retries parsing until the
-parent arrives. A turn still running appears once it finishes.
+Mistral Vibe labels each unified session with its last pinned model, falling
+back to `active_model` in `config.toml`, then `mistral-medium-3.5`. Config edits
+reprice sessions when they are reparsed, including during a full resync.
+A turn still running appears once it finishes.
 
 OpenClaw checks both representations under each configured agent directory.
 The SQLite layout is one `agent/openclaw-agent.sqlite` file per agent. AgentsView

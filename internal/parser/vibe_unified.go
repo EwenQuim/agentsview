@@ -95,6 +95,7 @@ type vibeUnifiedEntry struct {
 	Text      string                  `json:"text"`
 	Content   jsontext.Value          `json:"content,omitempty"`
 	CreatedAt int64                   `json:"createdAt"`
+	UpdatedAt int64                   `json:"updatedAt"`
 	Detail    *vibeUnifiedEffect      `json:"detail,omitempty"`
 	State     *vibeUnifiedEffectState `json:"state,omitempty"`
 	Outcome   struct {
@@ -110,6 +111,7 @@ type vibeUnifiedEffect struct {
 }
 
 type vibeUnifiedEffectState struct {
+	Status string `json:"status"`
 	Reason string `json:"reason"`
 	Error  struct {
 		Message string `json:"message"`
@@ -157,7 +159,7 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 
 // parseVibeUnifiedResultFile parses a unified harness session directory,
 // anchored on its CURRENT pointer, into a ParseResult.
-func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResult, string, error) {
+func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []string) (ParseResult, string, error) {
 	sessionDir := filepath.Dir(anchorPath)
 	dirName := filepath.Base(sessionDir)
 
@@ -217,7 +219,12 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	var retryReason string
 	skipImported := false
 	if runtimeMeta.ImportProvenance != nil && parentID != "" {
-		skipImported = findVibeSourceFile(filepath.Dir(filepath.Dir(sessionDir)), parentID) != ""
+		for _, root := range roots {
+			if findVibeSourceFile(root, parentID) != "" {
+				skipImported = true
+				break
+			}
+		}
 		if !skipImported {
 			retryReason = "vibe parent source unresolved for " + parentID
 		}
@@ -430,6 +437,20 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
 	}
 	carrier := vibeToolResultCarrier(ordinal+1, entry.ID, resultText)
+	if entry.State != nil {
+		status := entry.State.Status
+		switch status {
+		case "failed", "skipped":
+			status = "errored"
+		}
+		if status == "completed" || status == "errored" || status == "cancelled" {
+			event := ParsedToolResultEvent{Status: status, Content: resultText}
+			if entry.UpdatedAt > 0 {
+				event.Timestamp = time.UnixMilli(entry.UpdatedAt)
+			}
+			call.ToolCalls[0].ResultEvents = append(call.ToolCalls[0].ResultEvents, event)
+		}
+	}
 	return call, &carrier
 }
 

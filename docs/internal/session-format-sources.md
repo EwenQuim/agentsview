@@ -3570,7 +3570,12 @@ schemas keep their existing ordering behavior.
   history flushes unmatched reasoning as a thinking-only assistant message,
   timestamped with the last reasoning entry's positive `createdAt`.
   Effect results use output text, decoded content, `state.reason`, then
-  `state.error.message`. `file_system.*` tools use the legacy categories;
+  `state.error.message`. Terminal effects emit result events with `updatedAt`
+  as their timestamp. Failed and skipped effects use `errored`, cancelled
+  effects use `cancelled`, and completed effects use `completed`.
+  Reverified against `_projection.py` at the unified-storage commit above
+  on 2026-10-07.
+  `file_system.*` tools use the legacy categories;
   other namespaced tools use Other. `subagent.spawn` uses Task and links
   `detail.childSessionId` with the `vibe:` prefix.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
@@ -3584,8 +3589,11 @@ schemas keep their existing ordering behavior.
   Runtime identity distinguishes forks and subagents. Imported sessions link
   to their source as continuations. With `import_provenance` present, imports
   and forks skip entries whose IDs start with `imported-` when the parent source
-  resolves. Otherwise, they keep all entries and request a reparse until the
-  parent arrives. Reverified against `_fork.py` at the unified-storage commit
+  resolves across the configured Vibe roots. Legacy parent lookup uses the same
+  tolerant identity parse as ingestion. Unified parents require a `CURRENT`
+  pointer that resolves to a generation with a readable manifest. Otherwise,
+  imports and forks keep all entries and request a reparse until the parent
+  arrives. Reverified against `_fork.py` at the unified-storage commit
   above on 2026-10-07; `imported_entry_id` assigns the `imported-` prefix.
   Fingerprints hash only `CURRENT` and `meta.json`, because
   `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.

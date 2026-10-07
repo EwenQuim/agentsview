@@ -55,7 +55,7 @@ func (s vibeSourceSet) Parse(ctx context.Context, req ParseRequest) (ParseOutcom
 	if req.Fingerprint.MTimeNS > 0 {
 		fileInfo.Mtime = req.Fingerprint.MTimeNS
 	}
-	result, retryReason, err := parseVibeUnifiedResultFile(src.Path, fileInfo)
+	result, retryReason, err := parseVibeUnifiedResultFile(src.Path, fileInfo, s.roots)
 	if err != nil {
 		return ParseOutcome{}, err
 	}
@@ -214,7 +214,11 @@ func findVibeSourceFile(root, sessionID string) string {
 	}
 	anchor := filepath.Join(root, "unified", sessionID, "CURRENT")
 	if isVibeMessagesFile(anchor) {
-		return anchor
+		if genDir, err := vibeUnifiedGenerationDir(filepath.Dir(anchor)); err == nil {
+			if _, err := readVibeUnifiedManifest(genDir); err == nil {
+				return anchor
+			}
+		}
 	}
 	if messagesPath := filepath.Join(
 		root, sessionID, "messages.jsonl",
@@ -235,7 +239,7 @@ func findVibeSourceFile(root, sessionID string) string {
 			continue
 		}
 		metaPath := filepath.Join(root, entry.Name(), "meta.json")
-		if meta, err := parseVibeMetadata(metaPath); err == nil &&
+		if meta, err := parseVibeIdentityMetadata(metaPath); err == nil &&
 			meta.SessionID == sessionID {
 			return messagesPath
 		}

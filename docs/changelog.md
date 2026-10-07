@@ -18,15 +18,7 @@ The latest published release is
   Visits that span a server change are discarded.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off.
 
-- Mistral Vibe sessions under `~/.vibe/logs/session/unified` sync again,
-  with transcripts, thinking, tool calls and result text, child-session links,
-  context size, and daily token usage. The whole session uses its last pinned
-  model, then `config.toml` `active_model`, then `mistral-medium-3.5`. A config
-  edit reprices only sessions reparsed afterward. Discarded stream tails are
-  skipped, and context size comes from `contextUsage` input plus output tokens.
-  Imported and forked history is skipped when the parent source is available.
-  Otherwise, the full history stays visible until the parent arrives and the
-  session is reparsed. A turn still running appears once it finishes.
+- Mistral Vibe sessions sync again with transcripts, tool outcomes, and token usage.
 - The web UI reports an anonymous `app_opened` event through the server when it
   loads and on the first focus of each later UTC day.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off with the daemon ping.

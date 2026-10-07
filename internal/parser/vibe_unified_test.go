@@ -19,7 +19,7 @@ func vibeUnifiedChunkFixture() string {
   {"createdAt":1790601807938,"id":"reasoning-1","text":"thinking it through","turnId":"turn-1","type":"reasoning"},
   {"content":[{"text":"unified answer","type":"text"}],"createdAt":1790601807938,"id":"assistant-1","role":"assistant","source":"harness","turnId":"turn-1","type":"message"},
   {"createdAt":1790601808000,"id":"reasoning-2","text":"checking the files","turnId":"turn-1","type":"reasoning"},
-  {"createdAt":1790601808027,"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}},"id":"effect-1","state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"},"turnId":"turn-1","type":"effect"},
+  {"createdAt":1790601808027,"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}},"id":"effect-1","state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"},"turnId":"turn-1","type":"effect","updatedAt":1790601808099},
   {"createdAt":1790601808100,"id":"notice-1","level":"info","message":"Running hooks","type":"notice"}
 ]`
 }
@@ -235,6 +235,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantThinking string
 		wantMessages int
 		wantZeroTime bool
+		wantStatus   string
 	}{
 		{
 			name:   "effect without timestamp",
@@ -246,24 +247,40 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"skipped","reason":"Permission denied"}`,
 			wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantStatus: "errored",
 		},
 		{
 			name:       "failed effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","error":{"message":"Command failed"},"output":{"content":[]},"outputText":""}`,
 			wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantStatus: "errored",
 		},
 		{
 			name:       "failure output takes precedence",
 			before:     `"status":"completed"`,
 			after:      `"status":"failed","reason":"fallback reason","error":{"message":"fallback error"}`,
 			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantStatus: "errored",
 		},
 		{
 			name:       "reason takes precedence over error",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","reason":"Stop requested","error":{"message":"fallback error"}}`,
 			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			wantStatus: "errored",
+		},
+		{
+			name:       "failed file_system.read_file",
+			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}},"id":"effect-1","state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"detail":{"kind":"tool","toolName":"file_system.read_file","input":{"path":"missing.txt"}},"id":"effect-1","state":{"status":"failed","error":{"message":"File unavailable"}}`,
+			wantResult: "File unavailable", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 4, wantStatus: "errored",
+		},
+		{
+			name:       "cancelled effect",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"status":"cancelled","reason":"Stop requested"}`,
+			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4, wantStatus: "cancelled",
 		},
 		{
 			name:       "file_system.read_file",
@@ -345,8 +362,15 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			}
 			require.Len(t, carrier.ToolResults, 1)
 			assert.Equal(t, tc.wantResult, DecodeContent(carrier.ToolResults[0].ContentRaw))
-			assert.Empty(t, carrier.ToolResults[0].Source)
-			assert.Empty(t, carrier.ToolResults[0].Status)
+			require.Len(t, call.ToolCalls[0].ResultEvents, 1)
+			event := call.ToolCalls[0].ResultEvents[0]
+			wantStatus := tc.wantStatus
+			if wantStatus == "" {
+				wantStatus = "completed"
+			}
+			assert.Equal(t, wantStatus, event.Status)
+			assert.Equal(t, tc.wantResult, event.Content)
+			assert.Equal(t, int64(1790601808099), event.Timestamp.UnixMilli())
 			for _, msg := range parsed.Messages {
 				if msg.SourceUUID == "assistant-1" {
 					assert.Equal(t, "mistral-medium-3.5", msg.Model)
@@ -464,44 +488,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	})
 }
 
-func TestVibeUnifiedProviderParseEmitsUsageEventsFromRuntimeModel(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(home, "logs", "session")
-	sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
-	writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), `{"config":{"active_model":"glm-5-3"}}`)
-	genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
-		`{"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
-			`"root_session_id":"`+vibeUnifiedSessionID+`","session_id":"`+vibeUnifiedSessionID+`"},`+
-			`"session_metadata":{"active_model":"mistral-large-2411",`+
-			`"cwd":"/Users/dev/work/my-repo"}}`)
-
-	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
-	require.True(t, ok)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1)
-	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
-	require.NoError(t, err)
-	outcome, err := provider.Parse(t.Context(), ParseRequest{
-		Source:      sources[0],
-		Fingerprint: fingerprint,
-	})
-	require.NoError(t, err)
-	require.Len(t, outcome.Results, 1)
-
-	usageEvents := outcome.Results[0].Result.UsageEvents
-	require.Len(t, usageEvents, 1)
-	assert.Equal(t, "vibe:"+vibeUnifiedSessionID, usageEvents[0].SessionID)
-	assert.Equal(t, "mistral-large-2411", usageEvents[0].Model)
-	assert.Equal(t, 1000, usageEvents[0].InputTokens)
-	assert.Equal(t, 200, usageEvents[0].OutputTokens)
-	assert.Equal(t, 500, usageEvents[0].CacheReadInputTokens)
-	assert.Equal(t, "session:vibe:"+vibeUnifiedSessionID, usageEvents[0].DedupKey)
-	require.Len(t, outcome.Results[0].Result.Messages, 4)
-	assert.Equal(t, "mistral-large-2411", outcome.Results[0].Result.Messages[1].Model)
-}
-
 func TestVibeUnifiedProviderParseConfigModel(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -550,6 +536,8 @@ func TestVibeUnifiedProviderParseConfigModel(t *testing.T) {
 			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
 			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
 			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+			assert.Equal(t, "vibe:"+vibeUnifiedSessionID, result.UsageEvents[0].SessionID)
+			assert.Equal(t, "session:vibe:"+vibeUnifiedSessionID, result.UsageEvents[0].DedupKey)
 			if tc.name == "config active model" {
 				writeSourceFile(t, filepath.Join(home, "config.toml"), `active_model = "mistral-medium-3.5"`)
 				updated, err := provider.Fingerprint(t.Context(), source)
@@ -608,24 +596,46 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 		kind             string
 		provenance       string
 		parentPresent    bool
+		parentState      string
 		wantMessages     int
 		wantRelationship RelationshipType
 	}{
-		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, 2, RelContinuation},
-		{"import without parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, false, 4, RelContinuation},
-		{"fork with parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, 2, RelFork},
-		{"fork without parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, false, 4, RelFork},
-		{"fork without provenance", "fork", "", false, 4, RelFork},
+		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, "", 2, RelContinuation},
+		{"import without parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, false, "", 4, RelContinuation},
+		{"fork with parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, "", 2, RelFork},
+		{"fork without parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, false, "", 4, RelFork},
+		{"fork without provenance", "fork", "", false, "", 4, RelFork},
+		{"import with parent in another root", "root", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "other root", 2, RelContinuation},
+		{"fork with parent in another root", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "other root", 2, RelFork},
+		{"import with malformed optional parent metadata", "root", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "optional metadata", 2, RelContinuation},
+		{"fork with broken parent CURRENT", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "broken CURRENT", 4, RelFork},
+		{"fork with missing parent manifest", "fork", `,"import_provenance":{"source":{"session_id":"legacy-parent"}}`, true, "missing manifest", 4, RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+			parentRoot := root
+			roots := []string{root}
+			if tc.parentState == "other root" {
+				parentRoot = t.TempDir()
+				roots = append(roots, parentRoot)
+			}
 			if tc.parentPresent {
 				if tc.kind == "fork" {
-					writeVibeUnifiedSession(t, root, "legacy-parent")
+					parentDir := writeVibeUnifiedSession(t, parentRoot, "legacy-parent")
+					if tc.parentState == "broken CURRENT" {
+						writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"missing"}`)
+					}
+					if tc.parentState == "missing manifest" {
+						require.NoError(t, os.Remove(filepath.Join(parentDir, "generations", "0000000000000001", "manifest.json")))
+					}
 				} else {
-					parentDir := filepath.Join(root, "session_20260928_130000_legacy-p")
-					writeSourceFile(t, filepath.Join(parentDir, "meta.json"), `{"session_id":"legacy-parent"}`)
+					parentDir := filepath.Join(parentRoot, "session_20260928_130000_legacy-p")
+					meta := `{"session_id":"legacy-parent"}`
+					if tc.parentState == "optional metadata" {
+						meta = `{"session_id":"legacy-parent","start_time":"invalid"}`
+					}
+					writeSourceFile(t, filepath.Join(parentDir, "meta.json"), meta)
 					writeSourceFile(t, filepath.Join(parentDir, "messages.jsonl"), "{\"role\":\"user\",\"content\":\"old question\"}\n")
 				}
 			}
@@ -637,7 +647,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 				{"type":"message","id":"new-1","role":"user","content":[{"text":"new question"}]},
 				{"type":"message","id":"new-2","role":"assistant","content":[{"text":"new answer"}]}
 			]`)
-			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: roots})
 			require.True(t, ok)
 			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: vibeUnifiedSessionID})
 			require.NoError(t, err)
@@ -652,7 +662,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, tc.wantRelationship, result.Session.RelationshipType)
 			require.Len(t, result.Messages, tc.wantMessages)
 			assert.Equal(t, "new answer", result.Messages[tc.wantMessages-1].Content)
-			if tc.parentPresent {
+			if tc.wantMessages == 2 {
 				assert.Equal(t, "new question", result.Session.FirstMessage)
 				assert.Equal(t, 1, result.Session.UserMessageCount)
 				assert.Equal(t, "new answer", result.Messages[1].Content)
@@ -661,7 +671,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 				assert.Equal(t, 2, result.Session.UserMessageCount)
 				assert.Equal(t, "old answer", result.Messages[1].Content)
 			}
-			if !tc.parentPresent && tc.provenance != "" {
+			if tc.wantMessages == 4 && tc.provenance != "" {
 				assert.Equal(t, DataVersionNeedsRetry, outcome.Results[0].DataVersion)
 				assert.Equal(t, "vibe parent source unresolved for legacy-parent", outcome.Results[0].RetryReason)
 				writeVibeUnifiedSession(t, root, "legacy-parent")

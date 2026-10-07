@@ -426,12 +426,7 @@ func parseVibeSession(path, machine string) (*ParsedSession, []ParsedMessage, []
 		Mtime: info.ModTime().UnixNano(),
 	}
 
-	var result ParseResult
-	if vibeIsUnifiedAnchor(path) {
-		result, _, err = parseVibeUnifiedResultFile(path, fileInfo)
-	} else {
-		result, err = parseVibeResultFile(path, fileInfo)
-	}
+	result, err := parseVibeResultFile(path, fileInfo)
 	if err != nil {
 		return nil, nil, nil, err
 	}
