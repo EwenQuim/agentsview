@@ -3544,6 +3544,7 @@ schemas keep their existing ordering behavior.
   `7cb91894c40bb25173abcfa36e5ea2b4b81eb28c`; see
   [_storage.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_storage.py),
   [_fork.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_fork.py),
+  [_projection.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_projection.py),
   and
   [vibe_schema.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/core/config/vibe_schema.py).
 - **Usage and cost:** Legacy metadata stores aggregate session
@@ -3555,16 +3556,29 @@ schemas keep their existing ordering behavior.
   user overrode it for that session (`runtime-state.json`
   `session_metadata.active_model`); otherwise Agentsview falls back to the
   CLI default from `<vibe-home>/config.toml` `active_model`, then
-  `mistral-medium-3.5`. Config changes do not trigger reparsing of old sessions.
+  `mistral-medium-3.5`. Config changes do not trigger reparsing, but every
+  reparse prices unpinned sessions using the current config. `model_change`
+  checkpoints set `details.model` on following assistant and tool-call
+  messages; aggregate usage stays on the resolved session model.
+  Reasoning attaches to the next assistant message or effect in its turn,
+  including across user or steering messages. Effects use output text, then
+  `state.reason`, then `state.error.message`; skipped and failed effects
+  produce errored tool results. `subagent.spawn` uses the Task category and
+  links `detail.childSessionId` with the `vibe:` prefix.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
   parse cannot replace repository classification with generic fallbacks.
+  Unified session IDs come from directory names. Legacy lookup confirms
+  `meta.json` only in directories ending with the first eight ID characters.
   Unified sessions reuse the same metadata shape; subagent sessions have no
   `meta.json` and fall back to the projection snapshot and runtime identity.
   Runtime identity distinguishes forks and subagents. Imported sessions link
   to their source as continuations and trim `imported-` history when that
-  source exists locally; otherwise they keep the full history.
+  source exists locally; otherwise they keep the full history. Fingerprints
+  include parent presence so a later sync reparses when the parent appears.
+  They hash only `CURRENT` and `meta.json`, because `CURRENT` pins the
+  manifest by SHA-256 and the manifest pins every document.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

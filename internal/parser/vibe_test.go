@@ -161,14 +161,14 @@ func TestFindVibeSourceFileWithSpecialChars(t *testing.T) {
 
 func TestFindVibeSourceFileByMetaSessionID(t *testing.T) {
 	root := t.TempDir()
-	dirName := "session_20260613_123456_abc123def"
+	dirName := "session_20260613_123456_uuid-123"
 	setupFileSystem(t, root, map[string]string{
 		filepath.Join(dirName, "messages.jsonl"): "test",
 		filepath.Join(dirName, "meta.json"):      `{"session_id": "uuid-1234"}`,
 	})
 
 	// The canonical ID is the meta.json session_id, which differs from the
-	// directory name; the lookup must scan meta.json to resolve it.
+	// directory name; the lookup confirms the matching suffix through meta.json.
 	result := findVibeTestSourceFile(t, root, "uuid-1234")
 	expected := filepath.Join(root, dirName, "messages.jsonl")
 	assert.Equal(t, expected, result)
