@@ -3549,14 +3549,12 @@ schemas keep their existing ordering behavior.
   prompt/completion and context/last-turn/total statistics; the unified
   projection state stores session `tokenUsage` (input, output, cached input)
   and `contextUsage`. Neither stores per-message cache-creation or cost data.
-  Agentsview emits one aggregate usage event for recorded tokens. The whole
-  session uses `runtime-state.json` `session_metadata.active_model`, then
-  `config.toml` `active_model`, then `mistral-medium-3.5`. The config reader
-  applies only to roots ending in `logs/session` and reads the config beside
-  `logs`. Config edits reprice only sessions reparsed afterward; the config is
-  excluded from fingerprints and watches. Unified `SessionMetadata` has no
-  model field. The CLI default comes from `resolve_default_model_alias` in
-  `vibe_schema.py`; runtime routing and user aliases remain outside this parser.
+  Agentsview emits one aggregate usage event for recorded tokens. Each unified
+  session uses only the recorded `runtime-state.json`
+  `session_metadata.active_model`. Sessions without a pin keep their tokens
+  with an empty model. Usage reports exclude these events from pricing and
+  totals. The producer pins the active model at each turn start in
+  [_pin_session_model_choice](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L6301).
   Context size is `contextUsage` input plus output tokens, matching
   `_context_tokens` in
   [_unified_harness_backend_adapter.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L9085).
@@ -3566,8 +3564,16 @@ schemas keep their existing ordering behavior.
   preserves resource blocks with nested `resource.text`. Effect states use
   `running`, `completed`, `failed`, `skipped`, or `cancelled`, with
   `outputText`, `output.content`, `reason`, and `error.message` fields.
-  Reverified against `_projection.py`, `_fork.py`, `_host.py`, and
-  `session_protocol.py` at the unified-storage commit above on 2026-10-07.
+  Tool-result images use `data` and `mimeType` in `RustImageContentBlock`
+  from
+  [protocol.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/protocol.py#L422).
+  Agentsview stores those results as text and `input_image` blocks so the
+  storage image policy handles their payloads. Message images remain text
+  placeholders. `PublicMessageEntry` roles are `system`, `user`, or
+  `assistant`; steering uses a user message with `source: turn_steer`.
+  Reverified against `_projection.py`, `_fork.py`, `_host.py`,
+  `session_protocol.py`, `_unified_harness_backend_adapter.py`, `models.py`,
+  and `protocol.py` at the unified-storage commit above on 2026-10-07.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/tidwall/gjson"
 )
 
@@ -220,7 +219,6 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	if result.Session.SessionName == "" {
 		result.Session.SessionName = projSession.Title
 	}
-	result.Session.SessionNamePresent = result.Session.SessionName != ""
 	if result.Session.StartedAt.IsZero() {
 		result.Session.StartedAt = time.Unix(0, fileInfo.Mtime)
 		if projSession.CreatedAt > 0 {
@@ -252,10 +250,6 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		result.Session.PeakContextTokens = contextTokens
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
-	if sessionModel == "" {
-		sessionsRoot := filepath.Dir(filepath.Dir(sessionDir))
-		sessionModel = firstNonEmptyJSONLString(vibeConfigModel(sessionsRoot), "mistral-medium-3.5")
-	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
 		return result, err
@@ -446,7 +440,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 	resultText := ""
 	if entry.State != nil {
 		if entry.State.Output != nil {
-			resultText = vibeUnifiedContentText(gjson.Parse(string(entry.State.Output.Content)), "\n")
+			resultText = vibeUnifiedToolResultContent(gjson.Parse(string(entry.State.Output.Content)))
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.OutputText, entry.State.Reason, entry.State.Error.Message)
 	}
@@ -482,25 +476,30 @@ func readVibeUnifiedDoc(genDir, name string, v any) error {
 	return nil
 }
 
-// Every reparse prices unpinned sessions using the current config.toml.
-func vibeConfigModel(sessionsRoot string) string {
-	root := filepath.Clean(sessionsRoot)
-	if filepath.Base(root) != "session" ||
-		filepath.Base(filepath.Dir(root)) != "logs" {
-		return ""
+func vibeUnifiedToolResultContent(content gjson.Result) string {
+	hasImages := false
+	for _, block := range content.Array() {
+		if block.Get("type").Str == "image" {
+			hasImages = true
+			break
+		}
 	}
-	configPath := filepath.Join(filepath.Dir(filepath.Dir(root)), "config.toml")
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		return ""
+	if !hasImages {
+		return vibeUnifiedContentText(content, "\n")
 	}
-	var config struct {
-		ActiveModel string `toml:"active_model"`
+	var blocks []map[string]string
+	for _, block := range content.Array() {
+		if block.Get("type").Str == "image" {
+			blocks = append(blocks, map[string]string{
+				"type": "input_image", "image_url": "data:" + block.Get("mimeType").Str + ";base64," + block.Get("data").Str,
+			})
+		} else {
+			text := vibeUnifiedContentText(gjson.Parse("["+block.Raw+"]"), "")
+			blocks = append(blocks, map[string]string{"type": "text", "text": text})
+		}
 	}
-	if _, err := toml.Decode(string(raw), &config); err != nil {
-		return ""
-	}
-	return config.ActiveModel
+	encoded, _ := json.Marshal(blocks, json.Deterministic(true))
+	return string(encoded)
 }
 
 // CURRENT pins the manifest and its documents by digest.

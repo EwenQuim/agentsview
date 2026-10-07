@@ -455,10 +455,6 @@ func parseVibeSession(path, project, machine string) (*ParsedSession, []ParsedMe
 func vibeUsageEvents(
 	stats VibeStats, model, sessionID string, startedAt, endedAt time.Time,
 ) []ParsedUsageEvent {
-	// Only emit an event if we have a model and at least some token usage data
-	if model == "" {
-		return nil
-	}
 	if stats.SessionPromptTokens == 0 && stats.SessionCompletionTokens == 0 &&
 		stats.ContextTokens == 0 && stats.SessionTotalLLMTokens == 0 {
 		return nil
