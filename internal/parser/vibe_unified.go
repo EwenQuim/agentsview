@@ -133,7 +133,7 @@ func vibeIsUnifiedAnchor(path string) bool {
 // unified/<session-id>/ back to its session directory.
 func vibeUnifiedSessionDirFromRel(rel, root string) (string, bool) {
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) < 2 || parts[0] != "unified" || parts[1] == "" {
+	if len(parts) < 2 || parts[0] != "unified" {
 		return "", false
 	}
 	return filepath.Join(filepath.Clean(root), "unified", parts[1]), true
@@ -157,7 +157,7 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 
 // parseVibeUnifiedResultFile parses a unified harness session directory,
 // anchored on its CURRENT pointer, into a ParseResult.
-func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResult, error) {
+func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResult, string, error) {
 	sessionDir := filepath.Dir(anchorPath)
 	dirName := filepath.Base(sessionDir)
 
@@ -174,23 +174,23 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 
 	genDir, err := vibeUnifiedGenerationDir(sessionDir)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 
 	manifest, err := readVibeUnifiedManifest(genDir)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 
 	projection, err := readVibeUnifiedProjectionState(genDir)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 	projSession := projection.Snapshot.Session
 
 	_, _, _, err = applyVibeMetadata(&result, sessionDir)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 	result.Session.ID = "vibe:" + dirName
 	result.Session.SourceSessionID = dirName
@@ -198,7 +198,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 
 	runtimeMeta, err := readVibeUnifiedRuntimeMetadata(genDir)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 	if result.Session.Cwd == "" {
 		result.Session.Cwd = runtimeMeta.SessionMetadata.Cwd
@@ -213,6 +213,14 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 
 	if runtimeMeta.ImportProvenance != nil {
 		parentID = runtimeMeta.ImportProvenance.Source.SessionID
+	}
+	var retryReason string
+	skipImported := false
+	if runtimeMeta.ImportProvenance != nil && parentID != "" {
+		skipImported = findVibeSourceFile(filepath.Dir(filepath.Dir(sessionDir)), parentID) != ""
+		if !skipImported {
+			retryReason = "vibe parent source unresolved for " + parentID
+		}
 	}
 
 	if result.Session.SessionName == "" {
@@ -254,9 +262,9 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		sessionsRoot := filepath.Dir(filepath.Dir(sessionDir))
 		sessionModel = firstNonEmptyJSONLString(vibeConfigModel(sessionsRoot), "mistral-medium-3.5")
 	}
-	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
+	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel, skipImported)
 	if err != nil {
-		return result, err
+		return result, "", err
 	}
 	result.Messages = messages
 	setVibeMessageMetadata(&result)
@@ -271,11 +279,11 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		result.Session.StartedAt, result.Session.EndedAt,
 	)
 
-	return result, nil
+	return result, retryReason, nil
 }
 
 // parseVibeUnifiedChunks uses inline history unless the manifest names a chunk list.
-func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string) ([]ParsedMessage, error) {
+func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string, skipImported bool) ([]ParsedMessage, error) {
 	if chunkHashes != nil {
 		entries = nil
 		for _, chunkHash := range chunkHashes {
@@ -295,16 +303,24 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 	}
 	var messages []ParsedMessage
 	var thinking, thinkingTurn string
+	var thinkingCreatedAt int64
 	flushThinking := func() {
 		if thinking != "" {
-			messages = append(messages, ParsedMessage{
+			msg := ParsedMessage{
 				Ordinal: len(messages), Role: RoleAssistant, Model: model,
 				ThinkingText: thinking, HasThinking: true,
-			})
+			}
+			if thinkingCreatedAt > 0 {
+				msg.Timestamp = time.UnixMilli(thinkingCreatedAt)
+			}
+			messages = append(messages, msg)
 			thinking = ""
 		}
 	}
 	for _, entry := range entries {
+		if skipImported && strings.HasPrefix(entry.ID, "imported-") {
+			continue
+		}
 		if (entry.Type == "message" || entry.Type == "reasoning") && entry.Outcome.Type == "discarded" {
 			continue
 		}
@@ -324,6 +340,7 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 			messages = append(messages, msg)
 		case "reasoning":
 			thinkingTurn = entry.TurnID
+			thinkingCreatedAt = entry.CreatedAt
 			thinking += entry.Text
 		case "effect":
 			call, carrier := vibeUnifiedEffectMessages(entry, len(messages))

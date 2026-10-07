@@ -24,8 +24,9 @@ The latest published release is
   model, then `config.toml` `active_model`, then `mistral-medium-3.5`. A config
   edit reprices only sessions reparsed afterward. Discarded stream tails are
   skipped, and context size comes from `contextUsage` input plus output tokens.
-  Imported history stays in both sessions. A turn still running appears
-  once it finishes.
+  Imported and forked history is skipped when the parent source is available.
+  Otherwise, the full history stays visible until the parent arrives and the
+  session is reparsed. A turn still running appears once it finishes.
 - The web UI reports an anonymous `app_opened` event through the server when it
   loads and on the first focus of each later UTC day.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off with the daemon ping.

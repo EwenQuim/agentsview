@@ -3567,7 +3567,8 @@ schemas keep their existing ordering behavior.
   Message and reasoning entries with `outcome.type` of `discarded` are skipped.
   Reasoning attaches to the next assistant message or effect in its turn,
   including across user or steering messages. A turn change or the end of
-  history flushes unmatched reasoning as a thinking-only assistant message.
+  history flushes unmatched reasoning as a thinking-only assistant message,
+  timestamped with the last reasoning entry's positive `createdAt`.
   Effect results use output text, decoded content, `state.reason`, then
   `state.error.message`. `file_system.*` tools use the legacy categories;
   other namespaced tools use Other. `subagent.spawn` uses Task and links
@@ -3581,8 +3582,12 @@ schemas keep their existing ordering behavior.
   Unified sessions reuse the same metadata shape; subagent sessions have no
   `meta.json` and fall back to the projection snapshot and runtime identity.
   Runtime identity distinguishes forks and subagents. Imported sessions link
-  to their source as continuations and keep imported history in both
-  sessions. Fingerprints hash only `CURRENT` and `meta.json`, because
+  to their source as continuations. With `import_provenance` present, imports
+  and forks skip entries whose IDs start with `imported-` when the parent source
+  resolves. Otherwise, they keep all entries and request a reparse until the
+  parent arrives. Reverified against `_fork.py` at the unified-storage commit
+  above on 2026-10-07; `imported_entry_id` assigns the `imported-` prefix.
+  Fingerprints hash only `CURRENT` and `meta.json`, because
   `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.

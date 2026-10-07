@@ -362,11 +362,12 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name         string
-		entries      string
-		wantContent  string
-		wantThinking string
-		wantMessages int
+		name          string
+		entries       string
+		wantContent   string
+		wantThinking  string
+		wantMessages  int
+		wantTimestamp int64
 	}{
 		{
 			"discarded stream tails",
@@ -374,19 +375,30 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"discarded answer"}],"outcome":{"type":"discarded"}},
 			{"type":"reasoning","turnId":"turn-1","text":"committed thinking","outcome":{"type":"committed"}},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"committed answer"}],"outcome":{"type":"committed"}}]`,
-			"committed answer", "committed thinking", 1,
+			"committed answer", "committed thinking", 1, 0,
 		},
 		{
 			"trailing reasoning",
-			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought"},
+			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":1790601807938},
+			{"type":"reasoning","turnId":"turn-1","text":" continued","createdAt":1790601808000}]`,
+			"", "unfinished thought continued", 1, 1790601808000,
+		},
+		{
+			"trailing reasoning without timestamp",
+			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":1790601807938},
 			{"type":"reasoning","turnId":"turn-1","text":" continued"}]`,
-			"", "unfinished thought continued", 1,
+			"", "unfinished thought continued", 1, 0,
+		},
+		{
+			"trailing reasoning with negative timestamp",
+			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":-1}]`,
+			"", "unfinished thought", 1, 0,
 		},
 		{
 			"reasoning before another turn",
-			`[{"type":"reasoning","turnId":"turn-1","text":"earlier thought"},
+			`[{"type":"reasoning","turnId":"turn-1","text":"earlier thought","createdAt":1790601807938},
 			{"type":"message","role":"assistant","turnId":"turn-2","content":[{"text":"later answer"}]}]`,
-			"", "earlier thought", 2,
+			"", "earlier thought", 2, 1790601807938,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -402,6 +414,11 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			assert.True(t, messages[0].HasThinking)
 			assert.Equal(t, "mistral-medium-3.5", messages[0].Model)
 			assert.Equal(t, 0, messages[0].Ordinal)
+			if tc.wantTimestamp > 0 {
+				assert.Equal(t, tc.wantTimestamp, messages[0].Timestamp.UnixMilli())
+			} else {
+				assert.True(t, messages[0].Timestamp.IsZero())
+			}
 			if tc.wantMessages == 2 {
 				assert.Equal(t, "later answer", messages[1].Content)
 				assert.Empty(t, messages[1].ThinkingText)
@@ -594,9 +611,11 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 		wantMessages     int
 		wantRelationship RelationshipType
 	}{
-		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, 4, RelContinuation},
+		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, 2, RelContinuation},
 		{"import without parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, false, 4, RelContinuation},
-		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, 4, RelFork},
+		{"fork with parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, 2, RelFork},
+		{"fork without parent", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, false, 4, RelFork},
+		{"fork without provenance", "fork", "", false, 4, RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -633,9 +652,28 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, tc.wantRelationship, result.Session.RelationshipType)
 			require.Len(t, result.Messages, tc.wantMessages)
 			assert.Equal(t, "new answer", result.Messages[tc.wantMessages-1].Content)
-			assert.Equal(t, "old question", result.Session.FirstMessage)
-			assert.Equal(t, 2, result.Session.UserMessageCount)
-			assert.Equal(t, "old answer", result.Messages[1].Content)
+			if tc.parentPresent {
+				assert.Equal(t, "new question", result.Session.FirstMessage)
+				assert.Equal(t, 1, result.Session.UserMessageCount)
+				assert.Equal(t, "new answer", result.Messages[1].Content)
+			} else {
+				assert.Equal(t, "old question", result.Session.FirstMessage)
+				assert.Equal(t, 2, result.Session.UserMessageCount)
+				assert.Equal(t, "old answer", result.Messages[1].Content)
+			}
+			if !tc.parentPresent && tc.provenance != "" {
+				assert.Equal(t, DataVersionNeedsRetry, outcome.Results[0].DataVersion)
+				assert.Equal(t, "vibe parent source unresolved for legacy-parent", outcome.Results[0].RetryReason)
+				writeVibeUnifiedSession(t, root, "legacy-parent")
+				outcome, err = provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
+				require.NoError(t, err)
+				require.Len(t, outcome.Results, 1)
+				require.Len(t, outcome.Results[0].Result.Messages, 2)
+				assert.Equal(t, "new question", outcome.Results[0].Result.Session.FirstMessage)
+				assert.Equal(t, "new answer", outcome.Results[0].Result.Messages[1].Content)
+			}
+			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
+			assert.Empty(t, outcome.Results[0].RetryReason)
 		})
 	}
 }

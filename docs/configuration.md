@@ -476,8 +476,9 @@ applies only to roots ending in `logs/session`. A `config.toml` edit reprices on
 sessions reparsed afterward, including during a full resync. Discarded stream
 tails are skipped; unmatched reasoning appears as thinking-only assistant
 messages. Context size comes from `contextUsage` input plus output tokens.
-Imported history stays in both sessions. A turn still running appears once it
-finishes.
+Imported and forked history is skipped when the parent source is available.
+Otherwise, Agentsview keeps the full history and retries parsing until the
+parent arrives. A turn still running appears once it finishes.
 
 OpenClaw checks both representations under each configured agent directory.
 The SQLite layout is one `agent/openclaw-agent.sqlite` file per agent. AgentsView
