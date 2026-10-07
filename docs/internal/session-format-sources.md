@@ -3550,11 +3550,11 @@ schemas keep their existing ordering behavior.
   projection state stores session `tokenUsage` (input, output, cached input)
   and `contextUsage`. Neither stores per-message cache-creation or cost data.
   Agentsview emits one aggregate usage event for recorded tokens. Each unified
-  session uses only the recorded `runtime-state.json`
-  `session_metadata.active_model`. Sessions without a pin keep their tokens
+  session uses its recorded `runtime-state.json` `session_metadata.active_model`.
+  Subagent sessions use their direct parent's recorded model from its current
+  generation. Sessions with no recorded model in either store keep their tokens
   with an empty model. Usage reports exclude these events from pricing and
-  totals. Subagent sessions never record a model; the producer builds child
-  metadata without one in
+  totals. The producer builds child metadata without a model in
   [_host.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_host.py#L1501).
   The producer pins the active model at each turn start in
   [_pin_session_model_choice](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L6301).
@@ -3563,7 +3563,9 @@ schemas keep their existing ordering behavior.
   [_unified_harness_backend_adapter.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L9085).
   The producer writes `runtime-state.json` in every generation. Message and
   reasoning entries with `outcome.type: discarded` keep their visible content,
-  which Agentsview archives. `_projection.py` copies `vibe.userDisplayContent`
+  which Agentsview archives. Reasoning entries with empty `text` use the `summary`
+  string list from `_projection.py`, concatenated without a separator.
+  `_projection.py` copies `vibe.userDisplayContent`
   metadata into `userDisplayContent` and
   preserves resource blocks with nested `resource.text`. Effect states use
   `running`, `completed`, `failed`, `skipped`, or `cancelled`, with
