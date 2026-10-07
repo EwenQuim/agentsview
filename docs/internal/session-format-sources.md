@@ -3522,23 +3522,41 @@ schemas keep their existing ordering behavior.
 
 ## Mistral Vibe (`vibe`)
 
-- **Format:** A session directory containing `messages.jsonl` and `meta.json`.
-- **Evidence:** `source`.
+- **Format:** Legacy sessions are a directory containing `messages.jsonl` and
+  `meta.json`. Since the CLI's unified harness rollout (around September
+  2026) sessions are written under `unified/<session-id>/` with a `CURRENT`
+  generation pointer, `journal/<sequence>.jsonl` recovery records,
+  content-addressed `chunks/<sha256>.json`, and pruned
+  `generations/<sequence>/` snapshots; the newest generation's
+  `manifest.json` lists the projection chunks that hold the public
+  transcript, and `projection-state.json` carries the aggregate
+  `tokenUsage` and `contextUsage`.
+- **Evidence:** `source` for the legacy layout; `no-public-source` for the
+  unified store, whose shape is recorded from observed CLI output.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at
   `0685654a40a4035966891289065379a751a7e617`; see
   [session_logger.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/core/session/session_logger.py)
   and
   [history_manager.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/cli/history_manager.py).
-- **Usage and cost:** Metadata stores aggregate session prompt/completion and
-  context/last-turn/total statistics, without per-message cache or cost data.
+- **Usage and cost:** Legacy metadata stores aggregate session
+  prompt/completion and context/last-turn/total statistics; the unified
+  projection state stores session `tokenUsage` (input, output, cached input)
+  and `contextUsage`. Neither stores per-message cache-creation or cost data.
   Agentsview emits one aggregate usage event and catalog-prices it when model
-  identity is available.
+  identity is available. The unified store records the model only when the
+  user overrode it for that session (`runtime-state.json`
+  `session_metadata.active_model`); otherwise Agentsview falls back to the
+  CLI default from `<vibe-home>/config.toml` `active_model`, mirroring the
+  CLI's own resolution.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
   parse cannot replace repository classification with generic fallbacks.
-- **Agentsview:** `internal/parser/vibe.go` and
-  `internal/parser/vibe_provider.go`.
+  Unified sessions reuse the same metadata shape; subagent sessions
+  (`child-*` directories) have no `meta.json` and fall back to the projection
+  snapshot and runtime identity.
+- **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
+  and `internal/parser/vibe_provider.go`.
 
 ## Aider (`aider`)
 
