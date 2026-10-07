@@ -25,9 +25,11 @@ The latest release is
   token counts, priced at Meta's published Muse Spark and Muse Wonder rates.
   (#2241)
 - Mistral Vibe sessions under `~/.vibe/logs/session/unified` sync again,
-  with transcripts, tool calls and result text, child-session links, and
-  daily token usage. The session's last pinned model labels the whole
-  session; a session with no recorded model imports without a usage event.
+  with transcripts, thinking, tool calls and result text, child-session links,
+  context size, and daily token usage. The whole session uses its last pinned
+  model, then `config.toml` `active_model`, then `mistral-medium-3.5`. A config
+  edit reprices only sessions reparsed afterward. Discarded stream tails are
+  skipped, and context size comes from `contextUsage` input plus output tokens.
   Imported history stays in both sessions. A turn still running appears
   once it finishes.
 - Browse and search the retained archive during full parser and archive-only

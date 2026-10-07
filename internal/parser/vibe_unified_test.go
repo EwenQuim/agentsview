@@ -189,6 +189,8 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "my_repo", result.Result.Session.Project)
 	assert.Equal(t, "/Users/dev/work/my-repo", result.Result.Session.Cwd)
 	assert.Equal(t, "unified question", result.Result.Session.FirstMessage)
+	assert.Equal(t, 1450, result.Result.Session.PeakContextTokens)
+	assert.True(t, result.Result.Session.HasPeakContextTokens)
 	assert.Equal(t, 200, result.Result.Session.TotalOutputTokens)
 	assert.True(t, result.Result.Session.HasTotalOutputTokens)
 	assert.Equal(
@@ -232,7 +234,13 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantCategory string
 		wantThinking string
 		wantMessages int
+		wantZeroTime bool
 	}{
+		{
+			name:   "effect without timestamp",
+			before: `"createdAt":1790601808027`, after: `"createdAt":0`,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4, wantZeroTime: true,
+		},
 		{
 			name:       "skipped effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
@@ -328,6 +336,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			carrier := parsed.Messages[tc.wantMessages-1]
 			assert.Equal(t, "mistral-medium-3.5", call.Model)
 			assert.Equal(t, tc.wantThinking, call.ThinkingText)
+			assert.Equal(t, tc.wantZeroTime, call.Timestamp.IsZero())
 			require.Len(t, call.ToolCalls, 1)
 			assert.Equal(t, tc.wantCategory, call.ToolCalls[0].Category)
 			assert.Equal(t, tc.wantChild, call.ToolCalls[0].SubagentSessionID)
@@ -336,6 +345,8 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			}
 			require.Len(t, carrier.ToolResults, 1)
 			assert.Equal(t, tc.wantResult, DecodeContent(carrier.ToolResults[0].ContentRaw))
+			assert.Empty(t, carrier.ToolResults[0].Source)
+			assert.Empty(t, carrier.ToolResults[0].Status)
 			for _, msg := range parsed.Messages {
 				if msg.SourceUUID == "assistant-1" {
 					assert.Equal(t, "mistral-medium-3.5", msg.Model)
@@ -349,6 +360,78 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			assert.Equal(t, "mistral-medium-3.5", parsed.UsageEvents[0].Model)
 		})
 	}
+
+	for _, tc := range []struct {
+		name         string
+		entries      string
+		wantContent  string
+		wantThinking string
+		wantMessages int
+	}{
+		{
+			"discarded stream tails",
+			`[{"type":"reasoning","turnId":"turn-1","text":"discarded thinking","outcome":{"type":"discarded"}},
+			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"discarded answer"}],"outcome":{"type":"discarded"}},
+			{"type":"reasoning","turnId":"turn-1","text":"committed thinking","outcome":{"type":"committed"}},
+			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"committed answer"}],"outcome":{"type":"committed"}}]`,
+			"committed answer", "committed thinking", 1,
+		},
+		{
+			"trailing reasoning",
+			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought"},
+			{"type":"reasoning","turnId":"turn-1","text":" continued"}]`,
+			"", "unfinished thought continued", 1,
+		},
+		{
+			"reasoning before another turn",
+			`[{"type":"reasoning","turnId":"turn-1","text":"earlier thought"},
+			{"type":"message","role":"assistant","turnId":"turn-2","content":[{"text":"later answer"}]}]`,
+			"", "earlier thought", 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), tc.entries)
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			messages := outcome.Results[0].Result.Messages
+			require.Len(t, messages, tc.wantMessages)
+			assert.Equal(t, RoleAssistant, messages[0].Role)
+			assert.Equal(t, tc.wantContent, messages[0].Content)
+			assert.Equal(t, tc.wantThinking, messages[0].ThinkingText)
+			assert.True(t, messages[0].HasThinking)
+			assert.Equal(t, "mistral-medium-3.5", messages[0].Model)
+			assert.Equal(t, 0, messages[0].Ordinal)
+			if tc.wantMessages == 2 {
+				assert.Equal(t, "later answer", messages[1].Content)
+				assert.Empty(t, messages[1].ThinkingText)
+				assert.Equal(t, 1, messages[1].Ordinal)
+			}
+		})
+	}
+
+	t.Run("missing context does not use cumulative usage", func(t *testing.T) {
+		path := filepath.Join(root, "unified", vibeUnifiedSessionID, "generations", "0000000000000001", "projection-state.json")
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		writeSourceFile(t, path, strings.Replace(string(raw), `"contextUsage"`, `"unusedContext"`, 1))
+		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		require.NoError(t, err)
+		require.Len(t, outcome.Results, 1)
+		assert.False(t, outcome.Results[0].Result.Session.HasPeakContextTokens)
+		assert.Zero(t, outcome.Results[0].Result.Session.PeakContextTokens)
+	})
+
+	t.Run("runtime state errors", func(t *testing.T) {
+		path := filepath.Join(root, "unified", vibeUnifiedSessionID, "generations", "0000000000000001", "runtime-state.json")
+		writeSourceFile(t, path, `{`)
+		_, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		require.ErrorContains(t, err, "parsing Vibe unified runtime state")
+		require.NoError(t, os.Remove(path))
+		_, err = provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		require.ErrorContains(t, err, "reading Vibe unified runtime state")
+		writeSourceFile(t, path, `{"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
+	})
 
 	t.Run("malformed optional metadata", func(t *testing.T) {
 		writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "meta.json"), `{"session_id":"other-id","start_time":"invalid","environment":{"working_directory":"/workspace/project-a"},"git_branch":"main"}`)
@@ -402,20 +485,33 @@ func TestVibeUnifiedProviderParseEmitsUsageEventsFromRuntimeModel(t *testing.T) 
 	assert.Equal(t, "mistral-large-2411", outcome.Results[0].Result.Messages[1].Model)
 }
 
-func TestVibeUnifiedProviderParseMetadataModel(t *testing.T) {
+func TestVibeUnifiedProviderParseConfigModel(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		meta      string
-		wantModel string
+		name        string
+		config      string
+		pin         string
+		outsideRoot bool
+		wantModel   string
 	}{
-		{"unpinned", `{}`, ""},
-		{"metadata active model", `{"config":{"active_model":"glm-5-3"}}`, "glm-5-3"},
+		{"config active model", `active_model = "devstral-2"`, "", false, "devstral-2"},
+		{"empty config", `active_model = ""`, "", false, "mistral-medium-3.5"},
+		{"missing config", "", "", false, "mistral-medium-3.5"},
+		{"malformed config", `active_model = [`, "", false, "mistral-medium-3.5"},
+		{"pin beats config", `active_model = "devstral-2"`, "mistral-large-2411", false, "mistral-large-2411"},
+		{"outside logs session", `active_model = "devstral-2"`, "", true, "mistral-medium-3.5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			home := t.TempDir()
+			root := filepath.Join(home, "logs", "session")
+			if tc.outsideRoot {
+				root = filepath.Join(home, "logs", "custom")
+			}
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
-			writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), tc.meta)
-			writeSourceFile(t, filepath.Join(sessionDir, "generations", "0000000000000001", "runtime-state.json"), `{"session_metadata":{"active_model":""}}`)
+			writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), `{"config":{"active_model":"ignored-model"},"model":"ignored-model"}`)
+			writeSourceFile(t, filepath.Join(sessionDir, "generations", "0000000000000001", "runtime-state.json"), `{"session_metadata":{"active_model":"`+tc.pin+`"}}`)
+			if tc.config != "" {
+				writeSourceFile(t, filepath.Join(home, "config.toml"), tc.config)
+			}
 			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
 			require.True(t, ok)
 			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: vibeUnifiedSessionID})
@@ -432,14 +528,21 @@ func TestVibeUnifiedProviderParseMetadataModel(t *testing.T) {
 			assert.Equal(t, "unified answer", result.Messages[1].Content)
 			assert.Equal(t, tc.wantModel, result.Messages[1].Model)
 			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
-			if tc.wantModel == "" {
-				assert.Empty(t, result.UsageEvents)
-			} else {
-				require.Len(t, result.UsageEvents, 1)
-				assert.Equal(t, "glm-5-3", result.UsageEvents[0].Model)
-				assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
-				assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
-				assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+			require.Len(t, result.UsageEvents, 1)
+			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
+			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
+			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
+			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+			if tc.name == "config active model" {
+				writeSourceFile(t, filepath.Join(home, "config.toml"), `active_model = "mistral-medium-3.5"`)
+				updated, err := provider.Fingerprint(t.Context(), source)
+				require.NoError(t, err)
+				assert.Equal(t, fingerprint, updated)
+				outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: updated})
+				require.NoError(t, err)
+				require.Len(t, outcome.Results, 1)
+				require.Len(t, outcome.Results[0].Result.UsageEvents, 1)
+				assert.Equal(t, "mistral-medium-3.5", outcome.Results[0].Result.UsageEvents[0].Model)
 			}
 		})
 	}

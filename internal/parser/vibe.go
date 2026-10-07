@@ -141,21 +141,7 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 			if vibeMsg.ToolCallID == "" {
 				continue
 			}
-			quoted, err := json.Marshal(vibeMsg.Content)
-			if err != nil {
-				continue
-			}
-			result.Messages = append(result.Messages, ParsedMessage{
-				Ordinal:       messageOrdinal,
-				Role:          RoleUser,
-				Content:       "",
-				ContentLength: len(vibeMsg.Content),
-				ToolResults: []ParsedToolResult{{
-					ToolUseID:     vibeMsg.ToolCallID,
-					ContentRaw:    string(quoted),
-					ContentLength: len(vibeMsg.Content),
-				}},
-			})
+			result.Messages = append(result.Messages, vibeToolResultCarrier(messageOrdinal, vibeMsg.ToolCallID, vibeMsg.Content))
 			messageOrdinal++
 			continue
 		}
@@ -184,6 +170,20 @@ func parseVibeResultFile(path string, fileInfo FileInfo) (ParseResult, error) {
 	}
 
 	return result, nil
+}
+
+func vibeToolResultCarrier(ordinal int, toolUseID, text string) ParsedMessage {
+	quoted, _ := json.Marshal(text)
+	return ParsedMessage{
+		Ordinal:       ordinal,
+		Role:          RoleUser,
+		ContentLength: len(text),
+		ToolResults: []ParsedToolResult{{
+			ToolUseID:     toolUseID,
+			ContentRaw:    string(quoted),
+			ContentLength: len(text),
+		}},
+	}
 }
 
 func applyVibeMetadata(result *ParseResult, dir string) (string, VibeStats, bool, error) {
@@ -414,7 +414,7 @@ func vibeToolArguments(args jsontext.Value) string {
 // and usage events in the shape the provider consumes: (*ParsedSession,
 // []ParsedMessage, []ParsedUsageEvent, error). It stats the file to build
 // FileInfo and optionally overrides the machine.
-func parseVibeSession(path, root, machine string) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, error) {
+func parseVibeSession(path, machine string) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err)
