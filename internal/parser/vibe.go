@@ -428,7 +428,7 @@ func parseVibeSession(path, machine string) (*ParsedSession, []ParsedMessage, []
 
 	var result ParseResult
 	if vibeIsUnifiedAnchor(path) {
-		result, err = parseVibeUnifiedResultFile(path, fileInfo)
+		result, _, err = parseVibeUnifiedResultFile(path, fileInfo)
 	} else {
 		result, err = parseVibeResultFile(path, fileInfo)
 	}

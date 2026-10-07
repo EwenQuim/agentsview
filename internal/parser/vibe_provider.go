@@ -12,14 +12,13 @@ import (
 // messages.jsonl transcript and a sibling meta.json. It is a single-file
 // provider: one transcript parses into one session, with a composite fingerprint
 // folding in meta.json and a fallback-ID exclusion when meta.json later supplies
-// a different session_id. All behavior is wired into the shared single-file base
-// via options.
+// a different session_id. Unified parsing adds unresolved-parent retry outcomes.
 func newVibeProviderFactory(def AgentDef) ProviderFactory {
-	return NewSingleFileProviderFactory(
+	return NewSourceSetFactory(
 		def,
 		vibeProviderCapabilities(),
-		func(cfg ProviderConfig) singleFileSourceSet {
-			return NewSingleFileSourceSet(
+		func(cfg ProviderConfig) SourceSet {
+			return vibeSourceSet{NewSingleFileSourceSet(
 				AgentVibe,
 				cfg.Roots,
 				WithStreamingFileDiscovery(vibeDiscoverEach),
@@ -28,9 +27,47 @@ func newVibeProviderFactory(def AgentDef) ProviderFactory {
 				WithFileLookup(vibeFindFile),
 				WithFileFingerprint(vibeFingerprintSource),
 				WithFileParse(vibeParseFile),
-			)
+			)}
 		},
 	)
+}
+
+type vibeSourceSet struct {
+	singleFileSourceSet
+}
+
+func (s vibeSourceSet) Parse(ctx context.Context, req ParseRequest) (ParseOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return ParseOutcome{}, err
+	}
+	src, ok := s.sourceFromRef(req.Source)
+	if !ok || !vibeIsUnifiedAnchor(src.Path) {
+		return s.singleFileSourceSet.Parse(ctx, req)
+	}
+	info, err := os.Stat(src.Path)
+	if err != nil {
+		return ParseOutcome{}, err
+	}
+	fileInfo := FileInfo{Path: src.Path, Size: info.Size(), Mtime: info.ModTime().UnixNano(), Hash: req.Fingerprint.Hash}
+	if req.Fingerprint.Size > 0 {
+		fileInfo.Size = req.Fingerprint.Size
+	}
+	if req.Fingerprint.MTimeNS > 0 {
+		fileInfo.Mtime = req.Fingerprint.MTimeNS
+	}
+	result, retryReason, err := parseVibeUnifiedResultFile(src.Path, fileInfo)
+	if err != nil {
+		return ParseOutcome{}, err
+	}
+	if req.Machine != "" {
+		result.Session.Machine = req.Machine
+	}
+	out := ParseResultOutcome{Result: result, DataVersion: DataVersionCurrent}
+	if retryReason != "" {
+		out.DataVersion = DataVersionNeedsRetry
+		out.RetryReason = retryReason
+	}
+	return ParseOutcome{Results: []ParseResultOutcome{out}, ResultSetComplete: true}, nil
 }
 
 func vibeDiscoverEach(

@@ -30,8 +30,9 @@ The latest release is
   model, then `config.toml` `active_model`, then `mistral-medium-3.5`. A config
   edit reprices only sessions reparsed afterward. Discarded stream tails are
   skipped, and context size comes from `contextUsage` input plus output tokens.
-  Imported history stays in both sessions. A turn still running appears
-  once it finishes.
+  Imported and forked history is skipped when the parent source is available.
+  Otherwise, the full history stays visible until the parent arrives and the
+  session is reparsed. A turn still running appears once it finishes.
 - Browse and search the retained archive during full parser and archive-only
   preservation rebuilds with a stale warning; archive writes fail with a retryable
   503. Scoped upgrades and schema repairs finish before serving.
