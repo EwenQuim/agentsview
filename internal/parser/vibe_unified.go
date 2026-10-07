@@ -309,9 +309,6 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 		if entry.Type == "notice" || entry.Type == "checkpoint" {
 			continue
 		}
-		if (entry.Type == "message" || entry.Type == "reasoning") && entry.Outcome.Type == "discarded" {
-			continue
-		}
 		if thinking != "" && entry.TurnID != thinkingTurn {
 			flushThinking()
 		}
@@ -431,7 +428,6 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 		call.Timestamp = time.UnixMilli(entry.CreatedAt)
 	}
 	if toolName == "subagent.spawn" {
-		call.ToolCalls[0].Category = "Task"
 		if entry.Detail.ChildSessionID != "" {
 			call.ToolCalls[0].SubagentSessionID = "vibe:" + entry.Detail.ChildSessionID
 		}
@@ -443,8 +439,6 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 			resultText = vibeUnifiedToolResultContent(gjson.Parse(string(entry.State.Output.Content)))
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.OutputText, entry.State.Reason, entry.State.Error.Message)
-	}
-	if entry.State != nil {
 		status := entry.State.Status
 		switch status {
 		case "failed", "skipped":
