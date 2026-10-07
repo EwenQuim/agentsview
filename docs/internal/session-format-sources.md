@@ -3530,14 +3530,22 @@ schemas keep their existing ordering behavior.
   `generations/<sequence>/` snapshots; the newest generation's
   `manifest.json` lists the projection chunks that hold the public
   transcript, and `projection-state.json` carries the aggregate
-  `tokenUsage` and `contextUsage`. The unified store shape is recorded from
-  observed CLI output, not from the pinned upstream source.
+  `tokenUsage` and `contextUsage`. Before chunk pooling, the transcript stays
+  in `snapshot.history.entries` when manifest `chunks` is null or missing.
+  Vibe folds the journal into a new generation when a turn finishes, so a
+  turn still in progress appears in Agentsview once it finishes.
 - **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at
   `0685654a40a4035966891289065379a751a7e617`; see
   [session_logger.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/core/session/session_logger.py)
   and
   [history_manager.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/cli/history_manager.py).
+  Unified storage was reverified on 2026-10-07 at
+  `7cb91894c40bb25173abcfa36e5ea2b4b81eb28c`; see
+  [_storage.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_storage.py),
+  [_fork.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_fork.py),
+  and
+  [vibe_schema.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/core/config/vibe_schema.py).
 - **Usage and cost:** Legacy metadata stores aggregate session
   prompt/completion and context/last-turn/total statistics; the unified
   projection state stores session `tokenUsage` (input, output, cached input)
@@ -3546,15 +3554,17 @@ schemas keep their existing ordering behavior.
   identity is available. The unified store records the model only when the
   user overrode it for that session (`runtime-state.json`
   `session_metadata.active_model`); otherwise Agentsview falls back to the
-  CLI default from `<vibe-home>/config.toml` `active_model`, mirroring the
-  CLI's own resolution.
+  CLI default from `<vibe-home>/config.toml` `active_model`, then
+  `mistral-medium-3.5`. Config changes do not trigger reparsing of old sessions.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
   parse cannot replace repository classification with generic fallbacks.
-  Unified sessions reuse the same metadata shape; subagent sessions
-  (`child-*` directories) have no `meta.json` and fall back to the projection
-  snapshot and runtime identity.
+  Unified sessions reuse the same metadata shape; subagent sessions have no
+  `meta.json` and fall back to the projection snapshot and runtime identity.
+  Runtime identity distinguishes forks and subagents. Imported sessions link
+  to their source as continuations and trim `imported-` history when that
+  source exists locally; otherwise they keep the full history.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

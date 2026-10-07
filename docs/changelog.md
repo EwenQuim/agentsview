@@ -22,9 +22,8 @@ The latest published release is
   unified harness session store (around September 2026). Sessions under
   `~/.vibe/logs/session/unified` sync again, with transcripts, tool calls,
   subagent relationships, and daily token usage. Sessions that ran on the
-  CLI's default model are attributed to the `active_model` from
-  `~/.vibe/config.toml` because the new store records the model only when it
-  was overridden per session.
+  CLI's default model use `active_model` from `~/.vibe/config.toml`, falling
+  back to `mistral-medium-3.5` when the config sets no model.
 - The web UI reports an anonymous `app_opened` event through the server when it
   loads and on the first focus of each later UTC day.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off with the daemon ping.
