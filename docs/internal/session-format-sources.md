@@ -3551,14 +3551,24 @@ schemas keep their existing ordering behavior.
   prompt/completion and context/last-turn/total statistics; the unified
   projection state stores session `tokenUsage` (input, output, cached input)
   and `contextUsage`. Neither stores per-message cache-creation or cost data.
-  Agentsview emits one aggregate usage event and catalog-prices it when model
-  identity is available. The session's last pinned model in
-  `runtime-state.json` `session_metadata.active_model` labels the whole
-  session, with `meta.json` model or `config.active_model` as the fallback.
-  An unpinned session with no metadata model imports its transcript without
-  a usage event. Reasoning attaches to the next assistant message or effect
-  in its turn, including across user or steering messages. Effect results
-  use output text, decoded content, `state.reason`, then
+  Agentsview emits one aggregate usage event for recorded tokens. The whole
+  session uses `runtime-state.json` `session_metadata.active_model`, then
+  `config.toml` `active_model`, then `mistral-medium-3.5`. The config reader
+  applies only to roots ending in `logs/session` and reads the config beside
+  `logs`. Config edits reprice only sessions reparsed afterward; the config is
+  excluded from fingerprints and watches. Unified `SessionMetadata` has no
+  model field. The CLI default comes from `resolve_default_model_alias` in
+  `vibe_schema.py`; runtime routing and user aliases remain outside this parser.
+  Context size is `contextUsage` input plus output tokens, matching
+  `_context_tokens` in
+  [_unified_harness_backend_adapter.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L9085).
+  Cumulative prompt tokens are not a context-size fallback. The producer writes
+  `runtime-state.json` in every generation; read and decode errors fail parsing.
+  Message and reasoning entries with `outcome.type` of `discarded` are skipped.
+  Reasoning attaches to the next assistant message or effect in its turn,
+  including across user or steering messages. A turn change or the end of
+  history flushes unmatched reasoning as a thinking-only assistant message.
+  Effect results use output text, decoded content, `state.reason`, then
   `state.error.message`. `file_system.*` tools use the legacy categories;
   other namespaced tools use Other. `subagent.spawn` uses Task and links
   `detail.childSessionId` with the `vibe:` prefix.

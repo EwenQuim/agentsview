@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // The unified harness session store (store format
@@ -50,10 +52,11 @@ type vibeUnifiedTokenUsage struct {
 }
 
 type vibeUnifiedProjectionSession struct {
-	Title      string                `json:"title"`
-	CreatedAt  int64                 `json:"createdAt"`
-	UpdatedAt  int64                 `json:"updatedAt"`
-	TokenUsage vibeUnifiedTokenUsage `json:"tokenUsage"`
+	Title        string                `json:"title"`
+	CreatedAt    int64                 `json:"createdAt"`
+	UpdatedAt    int64                 `json:"updatedAt"`
+	TokenUsage   vibeUnifiedTokenUsage `json:"tokenUsage"`
+	ContextUsage vibeUnifiedTokenUsage `json:"contextUsage"`
 }
 
 type vibeUnifiedProjectionState struct {
@@ -94,6 +97,9 @@ type vibeUnifiedEntry struct {
 	CreatedAt int64                   `json:"createdAt"`
 	Detail    *vibeUnifiedEffect      `json:"detail,omitempty"`
 	State     *vibeUnifiedEffectState `json:"state,omitempty"`
+	Outcome   struct {
+		Type string `json:"type"`
+	} `json:"outcome"`
 }
 
 type vibeUnifiedEffect struct {
@@ -182,7 +188,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	}
 	projSession := projection.Snapshot.Session
 
-	sessionModel, _, _, err := applyVibeMetadata(&result, sessionDir)
+	_, _, _, err = applyVibeMetadata(&result, sessionDir)
 	if err != nil {
 		return result, err
 	}
@@ -190,19 +196,19 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	result.Session.SourceSessionID = dirName
 	var parentID string
 
-	runtimeMeta, runtimeErr := readVibeUnifiedRuntimeMetadata(genDir)
-	runtimeKind := ""
-	if runtimeErr == nil {
-		if result.Session.Cwd == "" {
-			result.Session.Cwd = runtimeMeta.SessionMetadata.Cwd
-			if project := ExtractProjectFromCwdWithBranch(result.Session.Cwd, result.Session.GitBranch); project != "" {
-				result.Session.Project = project
-			}
+	runtimeMeta, err := readVibeUnifiedRuntimeMetadata(genDir)
+	if err != nil {
+		return result, err
+	}
+	if result.Session.Cwd == "" {
+		result.Session.Cwd = runtimeMeta.SessionMetadata.Cwd
+		if project := ExtractProjectFromCwdWithBranch(result.Session.Cwd, result.Session.GitBranch); project != "" {
+			result.Session.Project = project
 		}
-		runtimeKind = runtimeMeta.Identity.Kind
-		if runtimeKind == "subagent" || runtimeKind == "fork" {
-			parentID = runtimeMeta.Identity.ParentSessionID
-		}
+	}
+	runtimeKind := runtimeMeta.Identity.Kind
+	if runtimeKind == "subagent" || runtimeKind == "fork" {
+		parentID = runtimeMeta.Identity.ParentSessionID
 	}
 
 	if runtimeMeta.ImportProvenance != nil {
@@ -239,7 +245,15 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		result.Session.HasTotalOutputTokens = true
 		result.Session.TotalOutputTokens = projSession.TokenUsage.OutputTokens
 	}
-	sessionModel = firstNonEmptyJSONLString(runtimeMeta.SessionMetadata.ActiveModel, sessionModel)
+	if contextTokens := projSession.ContextUsage.InputTokens + projSession.ContextUsage.OutputTokens; contextTokens > 0 {
+		result.Session.HasPeakContextTokens = true
+		result.Session.PeakContextTokens = contextTokens
+	}
+	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
+	if sessionModel == "" {
+		sessionsRoot := filepath.Dir(filepath.Dir(sessionDir))
+		sessionModel = firstNonEmptyJSONLString(vibeConfigModel(sessionsRoot), "mistral-medium-3.5")
+	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
 		return result, err
@@ -280,27 +294,44 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 		}
 	}
 	var messages []ParsedMessage
-	thinkingByTurn := make(map[string]string)
+	var thinking, thinkingTurn string
+	flushThinking := func() {
+		if thinking != "" {
+			messages = append(messages, ParsedMessage{
+				Ordinal: len(messages), Role: RoleAssistant, Model: model,
+				ThinkingText: thinking, HasThinking: true,
+			})
+			thinking = ""
+		}
+	}
 	for _, entry := range entries {
+		if (entry.Type == "message" || entry.Type == "reasoning") && entry.Outcome.Type == "discarded" {
+			continue
+		}
+		if thinking != "" && entry.TurnID != thinkingTurn {
+			flushThinking()
+		}
 		switch entry.Type {
 		case "message":
-			msg := vibeUnifiedEntryMessage(entry, thinkingByTurn)
+			msg := vibeUnifiedEntryMessage(entry)
 			msg.Ordinal = len(messages)
 			if msg.Role == RoleAssistant {
 				msg.Model = model
+				msg.ThinkingText = thinking
+				msg.HasThinking = thinking != ""
+				thinking = ""
 			}
 			messages = append(messages, msg)
 		case "reasoning":
-			if entry.TurnID != "" {
-				thinkingByTurn[entry.TurnID] += entry.Text
-			}
+			thinkingTurn = entry.TurnID
+			thinking += entry.Text
 		case "effect":
 			call, carrier := vibeUnifiedEffectMessages(entry, len(messages))
 			if call != nil {
 				call.Model = model
-				call.ThinkingText = thinkingByTurn[entry.TurnID]
+				call.ThinkingText = thinking
 				call.HasThinking = call.ThinkingText != ""
-				delete(thinkingByTurn, entry.TurnID)
+				thinking = ""
 				messages = append(messages, *call)
 			}
 			if carrier != nil {
@@ -308,16 +339,12 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 			}
 		}
 	}
+	flushThinking()
 	return messages, nil
 }
 
-// vibeUnifiedEntryMessage converts a message entry to a parsed message. The
-// harness records thinking as separate reasoning entries that precede their
-// assistant message within the same turn, so buffered thinking is attached
-// here and the buffer cleared.
-func vibeUnifiedEntryMessage(
-	entry vibeUnifiedEntry, thinkingByTurn map[string]string,
-) ParsedMessage {
+// vibeUnifiedEntryMessage converts a public message entry.
+func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 	text := DecodeContent(string(entry.Content))
 
 	msg := ParsedMessage{
@@ -328,11 +355,6 @@ func vibeUnifiedEntryMessage(
 	}
 	if entry.CreatedAt > 0 {
 		msg.Timestamp = time.UnixMilli(entry.CreatedAt)
-	}
-	if msg.Role == RoleAssistant {
-		msg.ThinkingText = thinkingByTurn[entry.TurnID]
-		msg.HasThinking = msg.ThinkingText != ""
-		delete(thinkingByTurn, entry.TurnID)
 	}
 	if entry.Role != "user" && entry.Role != "assistant" {
 		msg.IsSystem = true
@@ -364,7 +386,6 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 	call := &ParsedMessage{
 		Ordinal:    ordinal,
 		Role:       RoleAssistant,
-		Timestamp:  time.UnixMilli(entry.CreatedAt),
 		HasToolUse: true,
 		ToolCalls: []ParsedToolCall{{
 			ToolUseID: entry.ID,
@@ -372,6 +393,9 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 			Category:  NormalizeToolCategory(strings.TrimPrefix(toolName, "file_system.")),
 			InputJSON: inputJSON,
 		}},
+	}
+	if entry.CreatedAt > 0 {
+		call.Timestamp = time.UnixMilli(entry.CreatedAt)
 	}
 	if toolName == "subagent.spawn" {
 		call.ToolCalls[0].Category = "Task"
@@ -388,22 +412,8 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
 	}
-	quoted, err := json.Marshal(resultText)
-	if err != nil {
-		quoted = []byte(`""`)
-	}
-	carrier := &ParsedMessage{
-		Ordinal:       ordinal + 1,
-		Role:          RoleUser,
-		Content:       "",
-		ContentLength: len(resultText),
-		ToolResults: []ParsedToolResult{{
-			ToolUseID:     entry.ID,
-			ContentRaw:    string(quoted),
-			ContentLength: len(resultText),
-		}},
-	}
-	return call, carrier
+	carrier := vibeToolResultCarrier(ordinal+1, entry.ID, resultText)
+	return call, &carrier
 }
 
 func readVibeUnifiedManifest(genDir string) (vibeUnifiedManifest, error) {
@@ -434,12 +444,33 @@ func readVibeUnifiedRuntimeMetadata(genDir string) (vibeUnifiedRuntimeMetadata, 
 	var meta vibeUnifiedRuntimeMetadata
 	raw, err := os.ReadFile(filepath.Join(genDir, "runtime-state.json"))
 	if err != nil {
-		return meta, err
+		return meta, fmt.Errorf("reading Vibe unified runtime state: %w", err)
 	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return meta, err
+		return meta, fmt.Errorf("parsing Vibe unified runtime state: %w", err)
 	}
 	return meta, nil
+}
+
+// Every reparse prices unpinned sessions using the current config.toml.
+func vibeConfigModel(sessionsRoot string) string {
+	root := filepath.Clean(sessionsRoot)
+	if filepath.Base(root) != "session" ||
+		filepath.Base(filepath.Dir(root)) != "logs" {
+		return ""
+	}
+	configPath := filepath.Join(filepath.Dir(filepath.Dir(root)), "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	var config struct {
+		ActiveModel string `toml:"active_model"`
+	}
+	if _, err := toml.Decode(string(raw), &config); err != nil {
+		return ""
+	}
+	return config.ActiveModel
 }
 
 // CURRENT pins the manifest and its documents by digest.
