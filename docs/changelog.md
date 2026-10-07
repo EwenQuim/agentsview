@@ -28,9 +28,8 @@ The latest release is
   unified harness session store (around September 2026). Sessions under
   `~/.vibe/logs/session/unified` sync again, with transcripts, tool calls,
   subagent relationships, and daily token usage. Sessions that ran on the
-  CLI's default model are attributed to the `active_model` from
-  `~/.vibe/config.toml` because the new store records the model only when it
-  was overridden per session.
+  CLI's default model use `active_model` from `~/.vibe/config.toml`, falling
+  back to `mistral-medium-3.5` when the config sets no model.
 - Browse and search the retained archive during full parser and archive-only
   preservation rebuilds with a stale warning; archive writes fail with a retryable
   503. Scoped upgrades and schema repairs finish before serving.

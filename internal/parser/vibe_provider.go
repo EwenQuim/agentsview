@@ -252,17 +252,7 @@ func vibeFingerprintSource(src singleFileSource) (SourceFingerprint, error) {
 func vibeParseFile(
 	src singleFileSource, req ParseRequest,
 ) ([]ParseResult, []string, error) {
-	var (
-		sess        *ParsedSession
-		msgs        []ParsedMessage
-		usageEvents []ParsedUsageEvent
-		err         error
-	)
-	if vibeIsUnifiedAnchor(src.Path) {
-		sess, msgs, usageEvents, err = parseVibeUnifiedSession(src.Path, src.Root, req.Machine)
-	} else {
-		sess, msgs, usageEvents, err = parseVibeSession(src.Path, "", req.Machine)
-	}
+	sess, msgs, usageEvents, err := parseVibeSession(src.Path, src.Root, req.Machine)
 	if err != nil {
 		return nil, nil, err
 	}

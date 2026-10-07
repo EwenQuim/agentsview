@@ -412,11 +412,11 @@ func vibeToolArguments(args jsontext.Value) string {
 	return string(args)
 }
 
-// parseSession parses a Vibe session at path and returns the session, messages,
+// parseVibeSession parses a Vibe session at path and returns the session, messages,
 // and usage events in the shape the provider consumes: (*ParsedSession,
 // []ParsedMessage, []ParsedUsageEvent, error). It stats the file to build
-// FileInfo and optionally overrides the project and machine.
-func parseVibeSession(path, project, machine string) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, error) {
+// FileInfo and optionally overrides the machine.
+func parseVibeSession(path, root, machine string) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stat %s: %w", path, err)
@@ -428,14 +428,14 @@ func parseVibeSession(path, project, machine string) (*ParsedSession, []ParsedMe
 		Mtime: info.ModTime().UnixNano(),
 	}
 
-	result, err := parseVibeResultFile(path, fileInfo)
+	var result ParseResult
+	if vibeIsUnifiedAnchor(path) {
+		result, err = parseVibeUnifiedResultFile(path, fileInfo, root)
+	} else {
+		result, err = parseVibeResultFile(path, fileInfo)
+	}
 	if err != nil {
 		return nil, nil, nil, err
-	}
-
-	// Override project if provided
-	if project != "" {
-		result.Session.Project = project
 	}
 
 	// Override machine if provided
