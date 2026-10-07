@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,4 +269,5 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	assert.Equal(t, "vibe:"+parentID, session.ParentSessionID)
 	assert.Equal(t, RelSubagent, session.RelationshipType)
 	assert.Equal(t, "my_repo", session.Project)
+	assert.True(t, time.UnixMilli(1790601803600).Equal(session.StartedAt))
 }
