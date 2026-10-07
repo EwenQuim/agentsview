@@ -55,7 +55,7 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
 		`{"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
 			`"root_session_id":"`+sessionID+`","session_id":"`+sessionID+`"},`+
-			`"session_metadata":{"active_model":"",`+
+			`"session_metadata":{"active_model":"mistral-medium-3.5",`+
 			`"cwd":"/Users/dev/work/my-repo"}}`)
 	return sessionDir
 }
@@ -191,8 +191,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "unified question", result.Result.Session.FirstMessage)
 	assert.Equal(t, 200, result.Result.Session.TotalOutputTokens)
 	assert.True(t, result.Result.Session.HasTotalOutputTokens)
-	assert.Equal(t, 1450, result.Result.Session.PeakContextTokens)
-	assert.True(t, result.Result.Session.HasPeakContextTokens)
 	assert.Equal(
 		t, "2026-09-28T13:23:23Z", result.Result.Session.StartedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 	)
@@ -216,8 +214,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "file_system.bash", messages[2].ToolCalls[0].ToolName)
 	assert.Equal(t, "Bash", messages[2].ToolCalls[0].Category)
 	assert.Equal(t, RoleUser, messages[3].Role)
-	assert.Equal(t, "mistral-medium-3.5", messages[3].Model)
-	assert.Equal(t, "2026-09-28T13:23:28.027Z", messages[3].Timestamp.UTC().Format(time.RFC3339Nano))
 	require.Len(t, messages[3].ToolResults, 1)
 	assert.Equal(t, "effect-1", messages[3].ToolResults[0].ToolUseID)
 	assert.Contains(t, messages[3].ToolResults[0].ContentRaw, "file-a")
@@ -227,61 +223,81 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, 200, result.Result.UsageEvents[0].OutputTokens)
 	assert.Equal(t, 500, result.Result.UsageEvents[0].CacheReadInputTokens)
 	for _, tc := range []struct {
-		name               string
-		before             string
-		after              string
-		wantModel          string
-		wantAssistantModel string
-		wantStatus         string
-		wantResult         string
-		wantChild          string
-		wantCategory       string
-		wantThinking       string
-		wantMessages       int
+		name         string
+		before       string
+		after        string
+		wantResult   string
+		wantChild    string
+		wantInput    string
+		wantCategory string
+		wantThinking string
+		wantMessages int
 	}{
 		{
-			name:   "model change",
-			before: `{"createdAt":1790601808000,"id":"reasoning-2"`,
-			after: `{"type":"checkpoint","kind":"model_change","details":{"model":"devstral-2"}},
-			{"createdAt":1790601808000,"id":"reasoning-2"`,
-			wantModel: "devstral-2", wantStatus: "completed", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "skipped effect",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"status":"skipped","reason":"Permission denied"}`,
+			wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:   "model change before assistant",
-			before: `{"content":[{"text":"unified answer"`,
-			after: `{"type":"checkpoint","kind":"model_change","details":{"model":"devstral-2"}},
-			{"content":[{"text":"unified answer"`,
-			wantModel: "devstral-2", wantAssistantModel: "devstral-2", wantStatus: "completed", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "failed effect",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"status":"failed","error":{"message":"Command failed"},"output":{"content":[]},"outputText":""}`,
+			wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:      "skipped effect",
-			before:    `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
-			after:     `"state":{"status":"skipped","reason":"Permission denied"}`,
-			wantModel: "mistral-medium-3.5", wantStatus: "errored", wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "failure output takes precedence",
+			before:     `"status":"completed"`,
+			after:      `"status":"failed","reason":"fallback reason","error":{"message":"fallback error"}`,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:      "failed effect",
-			before:    `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
-			after:     `"state":{"status":"failed","error":{"message":"Command failed"},"output":{"content":[]},"outputText":""}`,
-			wantModel: "mistral-medium-3.5", wantStatus: "errored", wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "reason takes precedence over error",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"status":"failed","reason":"Stop requested","error":{"message":"fallback error"}}`,
+			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:      "failure output takes precedence",
-			before:    `"status":"completed"`,
-			after:     `"status":"failed","reason":"fallback reason","error":{"message":"fallback error"}`,
-			wantModel: "mistral-medium-3.5", wantStatus: "errored", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "file_system.read_file",
+			before:     `"toolName":"file_system.bash"`,
+			after:      `"toolName":"file_system.read_file"`,
+			wantResult: "file-a\nfile-b", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:      "reason takes precedence over error",
-			before:    `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
-			after:     `"state":{"status":"failed","reason":"Stop requested","error":{"message":"fallback error"}}`,
-			wantModel: "mistral-medium-3.5", wantStatus: "errored", wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+			name:       "skill.read",
+			before:     `"toolName":"file_system.bash"`,
+			after:      `"toolName":"skill.read"`,
+			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
-			name:      "subagent effect",
-			before:    `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}}`,
-			after:     `"detail":{"kind":"subagent","toolName":"subagent.spawn","input":{"task":"inspect files","agent":"generic"},"childSessionId":"child-session"}`,
-			wantModel: "mistral-medium-3.5", wantStatus: "completed", wantResult: "file-a\nfile-b", wantChild: "vibe:child-session", wantCategory: "Task", wantThinking: "checking the files", wantMessages: 4,
+			name:       "process.write",
+			before:     `"toolName":"file_system.bash"`,
+			after:      `"toolName":"process.write"`,
+			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 4,
+		},
+		{
+			name:      "null input",
+			before:    `"input":{"command":"ls"}`,
+			after:     `"input":null`,
+			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+		},
+		{
+			name:      "absent input",
+			before:    `,"input":{"command":"ls"}`,
+			after:     ``,
+			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+		},
+		{
+			name:       "output text takes precedence",
+			before:     `"state":{"output":`,
+			after:      `"state":{"outputText":"direct output","output":`,
+			wantResult: "direct output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 4,
+		},
+		{
+			name:       "subagent effect",
+			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}}`,
+			after:      `"detail":{"kind":"subagent","toolName":"subagent.spawn","input":{"task":"inspect files","agent":"generic"},"childSessionId":"child-session"}`,
+			wantResult: "file-a\nfile-b", wantChild: "vibe:child-session", wantCategory: "Task", wantThinking: "checking the files", wantMessages: 4,
 		},
 		{
 			name:   "user and steering preserve thinking for effect",
@@ -289,7 +305,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"createdAt":1790601808027,"detail"`,
-			wantModel: "mistral-medium-3.5", wantStatus: "completed", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
 		},
 		{
 			name:   "user and steering preserve thinking for assistant",
@@ -297,7 +313,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"steering","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"content":[{"text":"unified answer"`,
-			wantModel: "mistral-medium-3.5", wantStatus: "completed", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
+			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 6,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,21 +326,19 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			require.Len(t, parsed.Messages, tc.wantMessages)
 			call := parsed.Messages[tc.wantMessages-2]
 			carrier := parsed.Messages[tc.wantMessages-1]
-			assert.Equal(t, tc.wantModel, call.Model)
+			assert.Equal(t, "mistral-medium-3.5", call.Model)
 			assert.Equal(t, tc.wantThinking, call.ThinkingText)
 			require.Len(t, call.ToolCalls, 1)
 			assert.Equal(t, tc.wantCategory, call.ToolCalls[0].Category)
 			assert.Equal(t, tc.wantChild, call.ToolCalls[0].SubagentSessionID)
+			if tc.wantInput != "" {
+				assert.Equal(t, tc.wantInput, call.ToolCalls[0].InputJSON)
+			}
 			require.Len(t, carrier.ToolResults, 1)
-			assert.Equal(t, tc.wantStatus, carrier.ToolResults[0].Status)
 			assert.Equal(t, tc.wantResult, DecodeContent(carrier.ToolResults[0].ContentRaw))
 			for _, msg := range parsed.Messages {
 				if msg.SourceUUID == "assistant-1" {
-					assistantModel := tc.wantAssistantModel
-					if assistantModel == "" {
-						assistantModel = "mistral-medium-3.5"
-					}
-					assert.Equal(t, assistantModel, msg.Model)
+					assert.Equal(t, "mistral-medium-3.5", msg.Model)
 					assert.Equal(t, "thinking it through", msg.ThinkingText)
 				}
 				if msg.Role != RoleAssistant {
@@ -353,8 +367,8 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 func TestVibeUnifiedProviderParseEmitsUsageEventsFromRuntimeModel(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, "logs", "session")
-	writeSourceFile(t, filepath.Join(home, "config.toml"), "active_model = \"devstral-2\"\n")
 	sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+	writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), `{"config":{"active_model":"glm-5-3"}}`)
 	genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
 	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
 		`{"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
@@ -388,32 +402,47 @@ func TestVibeUnifiedProviderParseEmitsUsageEventsFromRuntimeModel(t *testing.T) 
 	assert.Equal(t, "mistral-large-2411", outcome.Results[0].Result.Messages[1].Model)
 }
 
-func TestVibeUnifiedProviderParseFallsBackToConfigDefaultModel(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(home, "logs", "session")
-	writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
-	writeSourceFile(t, filepath.Join(home, "config.toml"),
-		"active_model = \"glm-5-3\"\n")
-
-	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
-	require.True(t, ok)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1)
-	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
-	require.NoError(t, err)
-	outcome, err := provider.Parse(t.Context(), ParseRequest{
-		Source:      sources[0],
-		Fingerprint: fingerprint,
-	})
-	require.NoError(t, err)
-	require.Len(t, outcome.Results, 1)
-
-	usageEvents := outcome.Results[0].Result.UsageEvents
-	require.Len(t, usageEvents, 1)
-	assert.Equal(t, "glm-5-3", usageEvents[0].Model)
-	require.Len(t, outcome.Results[0].Result.Messages, 4)
-	assert.Equal(t, "glm-5-3", outcome.Results[0].Result.Messages[1].Model)
+func TestVibeUnifiedProviderParseMetadataModel(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		meta      string
+		wantModel string
+	}{
+		{"unpinned", `{}`, ""},
+		{"metadata active model", `{"config":{"active_model":"glm-5-3"}}`, "glm-5-3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+			writeSourceFile(t, filepath.Join(sessionDir, "meta.json"), tc.meta)
+			writeSourceFile(t, filepath.Join(sessionDir, "generations", "0000000000000001", "runtime-state.json"), `{"session_metadata":{"active_model":""}}`)
+			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+			require.True(t, ok)
+			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: vibeUnifiedSessionID})
+			require.NoError(t, err)
+			require.True(t, found)
+			fingerprint, err := provider.Fingerprint(t.Context(), source)
+			require.NoError(t, err)
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			result := outcome.Results[0].Result
+			require.Len(t, result.Messages, 4)
+			assert.Equal(t, "unified question", result.Messages[0].Content)
+			assert.Equal(t, "unified answer", result.Messages[1].Content)
+			assert.Equal(t, tc.wantModel, result.Messages[1].Model)
+			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
+			if tc.wantModel == "" {
+				assert.Empty(t, result.UsageEvents)
+			} else {
+				require.Len(t, result.UsageEvents, 1)
+				assert.Equal(t, "glm-5-3", result.UsageEvents[0].Model)
+				assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
+				assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
+				assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
+			}
+		})
+	}
 }
 
 // Subagent sessions recover identity from runtime-state when meta.json is absent.
@@ -462,9 +491,9 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 		wantMessages     int
 		wantRelationship RelationshipType
 	}{
-		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, 2, RelContinuation},
+		{"import with parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, true, 4, RelContinuation},
 		{"import without parent", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, false, 4, RelContinuation},
-		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, 2, RelFork},
+		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, true, 4, RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -501,30 +530,9 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, tc.wantRelationship, result.Session.RelationshipType)
 			require.Len(t, result.Messages, tc.wantMessages)
 			assert.Equal(t, "new answer", result.Messages[tc.wantMessages-1].Content)
-			if tc.wantMessages == 2 {
-				assert.Equal(t, "new question", result.Session.FirstMessage)
-				assert.Equal(t, 1, result.Session.UserMessageCount)
-				assert.Equal(t, 0, result.Messages[0].Ordinal)
-			} else {
-				assert.Equal(t, "old question", result.Session.FirstMessage)
-				assert.Equal(t, 2, result.Session.UserMessageCount)
-			}
-			if !tc.parentPresent {
-				parentDir := filepath.Join(root, "session_20260928_130000_legacy-p")
-				writeSourceFile(t, filepath.Join(parentDir, "meta.json"), `{"session_id":"legacy-parent"}`)
-				writeSourceFile(t, filepath.Join(parentDir, "messages.jsonl"), "{\"role\":\"user\",\"content\":\"old question\"}\n")
-				updated, err := provider.Fingerprint(t.Context(), source)
-				require.NoError(t, err)
-				assert.NotEqual(t, fingerprint.Hash, updated.Hash)
-				outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: updated})
-				require.NoError(t, err)
-				require.Len(t, outcome.Results, 1)
-				reparsed := outcome.Results[0].Result
-				require.Len(t, reparsed.Messages, 2)
-				assert.Equal(t, "new question", reparsed.Session.FirstMessage)
-				assert.Equal(t, 1, reparsed.Session.UserMessageCount)
-			}
-
+			assert.Equal(t, "old question", result.Session.FirstMessage)
+			assert.Equal(t, 2, result.Session.UserMessageCount)
+			assert.Equal(t, "old answer", result.Messages[1].Content)
 		})
 	}
 }

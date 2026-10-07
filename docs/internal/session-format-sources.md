@@ -3552,33 +3552,28 @@ schemas keep their existing ordering behavior.
   projection state stores session `tokenUsage` (input, output, cached input)
   and `contextUsage`. Neither stores per-message cache-creation or cost data.
   Agentsview emits one aggregate usage event and catalog-prices it when model
-  identity is available. The unified store records the model only when the
-  user overrode it for that session (`runtime-state.json`
-  `session_metadata.active_model`); otherwise Agentsview falls back to the
-  CLI default from `<vibe-home>/config.toml` `active_model`, then
-  `mistral-medium-3.5`. Config changes do not trigger reparsing, but every
-  reparse prices unpinned sessions using the current config. `model_change`
-  checkpoints set `details.model` on following assistant and tool-call
-  messages; aggregate usage stays on the resolved session model.
-  Reasoning attaches to the next assistant message or effect in its turn,
-  including across user or steering messages. Effects use output text, then
-  `state.reason`, then `state.error.message`; skipped and failed effects
-  produce errored tool results. `subagent.spawn` uses the Task category and
-  links `detail.childSessionId` with the `vibe:` prefix.
+  identity is available. The session's last pinned model in
+  `runtime-state.json` `session_metadata.active_model` labels the whole
+  session, with `meta.json` model or `config.active_model` as the fallback.
+  An unpinned session with no metadata model imports its transcript without
+  a usage event. Reasoning attaches to the next assistant message or effect
+  in its turn, including across user or steering messages. Effect results
+  use output text, decoded content, `state.reason`, then
+  `state.error.message`. `file_system.*` tools use the legacy categories;
+  other namespaced tools use Other. `subagent.spawn` uses Task and links
+  `detail.childSessionId` with the `vibe:` prefix.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
   parse cannot replace repository classification with generic fallbacks.
-  Unified session IDs come from directory names. Legacy lookup confirms
-  `meta.json` only in directories ending with the first eight ID characters.
+  Unified session IDs come from directory names. Legacy lookup scans
+  session directories for the matching `meta.json` session ID.
   Unified sessions reuse the same metadata shape; subagent sessions have no
   `meta.json` and fall back to the projection snapshot and runtime identity.
   Runtime identity distinguishes forks and subagents. Imported sessions link
-  to their source as continuations and trim `imported-` history when that
-  source exists locally; otherwise they keep the full history. Fingerprints
-  include parent presence so a later sync reparses when the parent appears.
-  They hash only `CURRENT` and `meta.json`, because `CURRENT` pins the
-  manifest by SHA-256 and the manifest pins every document.
+  to their source as continuations and keep imported history in both
+  sessions. Fingerprints hash only `CURRENT` and `meta.json`, because
+  `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

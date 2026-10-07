@@ -12,7 +12,7 @@ import (
 
 func TestVibeProviderSourceMethods(t *testing.T) {
 	root := t.TempDir()
-	sessionDir := "session_20260613_123456_uuid-123"
+	sessionDir := "session_20260613_123456_abc123def"
 	messagesPath := filepath.Join(root, sessionDir, "messages.jsonl")
 	metaPath := filepath.Join(root, sessionDir, "meta.json")
 	writeSourceFile(t, messagesPath, vibeProviderMessagesFixture("provider question"))
@@ -34,7 +34,7 @@ func TestVibeProviderSourceMethods(t *testing.T) {
 	assert.Equal(t, root, plan.Roots[0].Path)
 	assert.True(t, plan.Roots[0].Recursive)
 	assert.Equal(t, []string{
-		"messages.jsonl", "meta.json", "CURRENT", "*.json",
+		"messages.jsonl", "meta.json", "CURRENT",
 	}, plan.Roots[0].IncludeGlobs)
 
 	discovered, err := provider.Discover(t.Context())

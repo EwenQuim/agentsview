@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/BurntSushi/toml"
 )
 
 // The unified harness session store (store format
@@ -49,15 +47,13 @@ type vibeUnifiedTokenUsage struct {
 	InputTokens       int `json:"inputTokens"`
 	OutputTokens      int `json:"outputTokens"`
 	CachedInputTokens int `json:"cachedInputTokens"`
-	TotalTokens       int `json:"totalTokens"`
 }
 
 type vibeUnifiedProjectionSession struct {
-	Title        string                `json:"title"`
-	CreatedAt    int64                 `json:"createdAt"`
-	UpdatedAt    int64                 `json:"updatedAt"`
-	TokenUsage   vibeUnifiedTokenUsage `json:"tokenUsage"`
-	ContextUsage vibeUnifiedTokenUsage `json:"contextUsage"`
+	Title      string                `json:"title"`
+	CreatedAt  int64                 `json:"createdAt"`
+	UpdatedAt  int64                 `json:"updatedAt"`
+	TokenUsage vibeUnifiedTokenUsage `json:"tokenUsage"`
 }
 
 type vibeUnifiedProjectionState struct {
@@ -89,16 +85,12 @@ type vibeUnifiedRuntimeMetadata struct {
 }
 
 type vibeUnifiedEntry struct {
-	Type    string         `json:"type"`
-	Role    string         `json:"role"`
-	ID      string         `json:"id"`
-	TurnID  string         `json:"turnId"`
-	Text    string         `json:"text"`
-	Content jsontext.Value `json:"content,omitempty"`
-	Kind    string         `json:"kind,omitempty"`
-	Details struct {
-		Model string `json:"model"`
-	} `json:"details,omitempty"`
+	Type      string                  `json:"type"`
+	Role      string                  `json:"role"`
+	ID        string                  `json:"id"`
+	TurnID    string                  `json:"turnId"`
+	Text      string                  `json:"text"`
+	Content   jsontext.Value          `json:"content,omitempty"`
 	CreatedAt int64                   `json:"createdAt"`
 	Detail    *vibeUnifiedEffect      `json:"detail,omitempty"`
 	State     *vibeUnifiedEffectState `json:"state,omitempty"`
@@ -112,7 +104,6 @@ type vibeUnifiedEffect struct {
 }
 
 type vibeUnifiedEffectState struct {
-	Status string `json:"status"`
 	Reason string `json:"reason"`
 	Error  struct {
 		Message string `json:"message"`
@@ -160,7 +151,7 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 
 // parseVibeUnifiedResultFile parses a unified harness session directory,
 // anchored on its CURRENT pointer, into a ParseResult.
-func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root string) (ParseResult, error) {
+func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResult, error) {
 	sessionDir := filepath.Dir(anchorPath)
 	dirName := filepath.Base(sessionDir)
 
@@ -171,7 +162,6 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 			ID:              "vibe:" + dirName,
 			SourceSessionID: dirName,
 			Project:         "vibe",
-			StartedAt:       time.Unix(0, fileInfo.Mtime),
 			EndedAt:         time.Unix(0, fileInfo.Mtime),
 		},
 	}
@@ -192,38 +182,22 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 	}
 	projSession := projection.Snapshot.Session
 
-	var cwd, gitBranch, gitCommit, title, parentID string
-
-	meta, metaErr := parseVibeMetadata(filepath.Join(sessionDir, "meta.json"))
-	switch {
-	case metaErr != nil && errors.Is(metaErr, os.ErrNotExist):
-		// Subagent sessions have no meta.json; recover identity from the
-		// projection snapshot and runtime state.
-	case metaErr != nil:
-		identity, identityErr := parseVibeIdentityMetadata(filepath.Join(sessionDir, "meta.json"))
-		if identityErr != nil {
-			return result, fmt.Errorf("parsing Vibe unified meta.json in %s: %w", sessionDir, metaErr)
-		}
-		cwd = identity.WorkingDir
-		gitBranch = identity.GitBranch
-	default:
-		if !meta.StartTime.IsZero() {
-			result.Session.StartedAt = meta.StartTime
-		}
-		if !meta.EndTime.IsZero() {
-			result.Session.EndedAt = meta.EndTime
-		}
-		cwd = meta.WorkingDir
-		gitBranch = meta.GitBranch
-		gitCommit = meta.GitCommit
-		title = meta.Title
+	sessionModel, _, _, err := applyVibeMetadata(&result, sessionDir)
+	if err != nil {
+		return result, err
 	}
+	result.Session.ID = "vibe:" + dirName
+	result.Session.SourceSessionID = dirName
+	var parentID string
 
 	runtimeMeta, runtimeErr := readVibeUnifiedRuntimeMetadata(genDir)
 	runtimeKind := ""
 	if runtimeErr == nil {
-		if cwd == "" {
-			cwd = runtimeMeta.SessionMetadata.Cwd
+		if result.Session.Cwd == "" {
+			result.Session.Cwd = runtimeMeta.SessionMetadata.Cwd
+			if project := ExtractProjectFromCwdWithBranch(result.Session.Cwd, result.Session.GitBranch); project != "" {
+				result.Session.Project = project
+			}
 		}
 		runtimeKind = runtimeMeta.Identity.Kind
 		if runtimeKind == "subagent" || runtimeKind == "fork" {
@@ -235,27 +209,20 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 		parentID = runtimeMeta.ImportProvenance.Source.SessionID
 	}
 
-	if title == "" {
-		title = projSession.Title
+	if result.Session.SessionName == "" {
+		result.Session.SessionName = projSession.Title
 	}
-	if title != "" {
-		result.Session.SessionName = title
-		result.Session.SessionNamePresent = true
-	}
-	if projSession.CreatedAt > 0 && (metaErr != nil || meta.StartTime.IsZero()) {
-		result.Session.StartedAt = time.UnixMilli(projSession.CreatedAt)
+	result.Session.SessionNamePresent = result.Session.SessionName != ""
+	if result.Session.StartedAt.IsZero() {
+		result.Session.StartedAt = time.Unix(0, fileInfo.Mtime)
+		if projSession.CreatedAt > 0 {
+			result.Session.StartedAt = time.UnixMilli(projSession.CreatedAt)
+		}
 	}
 	if projSession.UpdatedAt > 0 {
 		result.Session.EndedAt = time.UnixMilli(projSession.UpdatedAt)
 	}
-	if cwd != "" {
-		result.Session.Cwd = cwd
-		if project := ExtractProjectFromCwdWithBranch(cwd, gitBranch); project != "" {
-			result.Session.Project = project
-		}
-	}
-	result.Session.GitBranch = gitBranch
-	result.Session.SourceVersion = gitCommit
+
 	if parentID != "" {
 		result.Session.ParentSessionID = "vibe:" + parentID
 		switch {
@@ -272,18 +239,8 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 		result.Session.HasTotalOutputTokens = true
 		result.Session.TotalOutputTokens = projSession.TokenUsage.OutputTokens
 	}
-	if projSession.ContextUsage.TotalTokens > 0 {
-		result.Session.HasPeakContextTokens = true
-		result.Session.PeakContextTokens = projSession.ContextUsage.TotalTokens
-	}
-
-	sessionModel := firstNonEmptyJSONLString(
-		runtimeMeta.SessionMetadata.ActiveModel,
-		vibeConfigDefaultModel(root),
-		"mistral-medium-3.5",
-	)
-	trimImported := runtimeMeta.ImportProvenance != nil && parentID != "" && findVibeSourceFile(root, parentID) != ""
-	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel, trimImported)
+	sessionModel = firstNonEmptyJSONLString(runtimeMeta.SessionMetadata.ActiveModel, sessionModel)
+	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
 		return result, err
 	}
@@ -294,7 +251,6 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 		SessionPromptTokens:     projSession.TokenUsage.InputTokens,
 		SessionCompletionTokens: projSession.TokenUsage.OutputTokens,
 		SessionCachedTokens:     projSession.TokenUsage.CachedInputTokens,
-		ContextTokens:           projSession.ContextUsage.TotalTokens,
 	}
 	result.UsageEvents = vibeUsageEvents(
 		stats, sessionModel, result.Session.ID,
@@ -305,7 +261,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, root strin
 }
 
 // parseVibeUnifiedChunks uses inline history unless the manifest names a chunk list.
-func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string, trimImported bool) ([]ParsedMessage, error) {
+func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string) ([]ParsedMessage, error) {
 	if chunkHashes != nil {
 		entries = nil
 		for _, chunkHash := range chunkHashes {
@@ -326,12 +282,6 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 	var messages []ParsedMessage
 	thinkingByTurn := make(map[string]string)
 	for _, entry := range entries {
-		if entry.Type == "checkpoint" && entry.Kind == "model_change" && entry.Details.Model != "" {
-			model = entry.Details.Model
-		}
-		if trimImported && strings.HasPrefix(entry.ID, "imported-") {
-			continue
-		}
 		switch entry.Type {
 		case "message":
 			msg := vibeUnifiedEntryMessage(entry, thinkingByTurn)
@@ -354,7 +304,6 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 				messages = append(messages, *call)
 			}
 			if carrier != nil {
-				carrier.Model = model
 				messages = append(messages, *carrier)
 			}
 		}
@@ -408,7 +357,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		return nil, nil
 	}
 	inputJSON := string(entry.Detail.Input)
-	if inputJSON == "" {
+	if inputJSON == "" || strings.TrimSpace(inputJSON) == "null" {
 		inputJSON = "{}"
 	}
 
@@ -420,7 +369,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		ToolCalls: []ParsedToolCall{{
 			ToolUseID: entry.ID,
 			ToolName:  toolName,
-			Category:  NormalizeToolCategory(toolName[strings.LastIndex(toolName, ".")+1:]),
+			Category:  NormalizeToolCategory(strings.TrimPrefix(toolName, "file_system.")),
 			InputJSON: inputJSON,
 		}},
 	}
@@ -432,19 +381,12 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 	}
 
 	resultText := ""
-	status := ""
 	if entry.State != nil {
 		resultText = entry.State.OutputText
 		if resultText == "" && entry.State.Output != nil {
 			resultText = DecodeContent(string(entry.State.Output.Content))
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.Reason, entry.State.Error.Message)
-		switch entry.State.Status {
-		case "failed", "skipped":
-			status = "errored"
-		case "completed":
-			status = "completed"
-		}
 	}
 	quoted, err := json.Marshal(resultText)
 	if err != nil {
@@ -452,13 +394,11 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 	}
 	carrier := &ParsedMessage{
 		Ordinal:       ordinal + 1,
-		Timestamp:     time.UnixMilli(entry.CreatedAt),
 		Role:          RoleUser,
 		Content:       "",
 		ContentLength: len(resultText),
 		ToolResults: []ParsedToolResult{{
 			ToolUseID:     entry.ID,
-			Status:        status,
 			ContentRaw:    string(quoted),
 			ContentLength: len(resultText),
 		}},
@@ -502,33 +442,8 @@ func readVibeUnifiedRuntimeMetadata(genDir string) (vibeUnifiedRuntimeMetadata, 
 	return meta, nil
 }
 
-// Every reparse prices unpinned sessions using the current config.toml.
-func vibeConfigDefaultModel(sessionsRoot string) string {
-	root := filepath.Clean(sessionsRoot)
-	if filepath.Base(root) != "session" ||
-		filepath.Base(filepath.Dir(root)) != "logs" {
-		return ""
-	}
-	configPath := filepath.Join(filepath.Dir(filepath.Dir(root)), "config.toml")
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		return ""
-	}
-	var config struct {
-		ActiveModel string `toml:"active_model"`
-	}
-	if _, err := toml.Decode(string(raw), &config); err != nil {
-		return ""
-	}
-	return config.ActiveModel
-}
-
-// CURRENT pins the manifest and its documents by digest; parent presence controls import trimming.
+// CURRENT pins the manifest and its documents by digest.
 func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
-	genDir, err := vibeUnifiedGenerationDir(sessionDir)
-	if err != nil {
-		return SourceFingerprint{}, err
-	}
 	var size, mtime int64
 	hash := sha256.New()
 	for _, path := range []string{
@@ -547,12 +462,6 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 		if err := addSiblingMetadataFingerprintPart(hash, filepath.Base(path), path, info); err != nil {
 			return SourceFingerprint{}, err
 		}
-	}
-	runtimeMeta, err := readVibeUnifiedRuntimeMetadata(genDir)
-	if err == nil && runtimeMeta.ImportProvenance != nil {
-		parentID := runtimeMeta.ImportProvenance.Source.SessionID
-		parentFound := parentID != "" && findVibeSourceFile(filepath.Dir(filepath.Dir(sessionDir)), parentID) != ""
-		fmt.Fprintf(hash, "parent_found:%t", parentFound)
 	}
 	return SourceFingerprint{Size: size, MTimeNS: mtime, Hash: hex.EncodeToString(hash.Sum(nil))}, nil
 }

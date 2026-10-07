@@ -18,12 +18,12 @@ The latest published release is
   Visits that span a server change are discarded.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off.
 
-- Mistral Vibe usage tracking no longer stops when the CLI switched to the
-  unified harness session store (around September 2026). Sessions under
-  `~/.vibe/logs/session/unified` sync again, with transcripts, tool calls,
-  subagent relationships, and daily token usage. Sessions that ran on the
-  CLI's default model use `active_model` from `~/.vibe/config.toml`, falling
-  back to `mistral-medium-3.5` when the config sets no model.
+- Mistral Vibe sessions under `~/.vibe/logs/session/unified` sync again,
+  with transcripts, tool calls and result text, child-session links, and
+  daily token usage. The session's last pinned model labels the whole
+  session; a session with no recorded model imports without a usage event.
+  Imported history stays in both sessions. A turn still running appears
+  once it finishes.
 - The web UI reports an anonymous `app_opened` event through the server when it
   loads and on the first focus of each later UTC day.
   `AGENTSVIEW_TELEMETRY_ENABLED=0` turns it off with the daemon ping.

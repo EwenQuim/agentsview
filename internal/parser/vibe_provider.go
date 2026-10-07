@@ -84,7 +84,7 @@ func vibeWatchRoots(roots []string) []WatchRoot {
 			Path:      root,
 			Recursive: true,
 			IncludeGlobs: []string{
-				"messages.jsonl", "meta.json", "CURRENT", "*.json",
+				"messages.jsonl", "meta.json", "CURRENT",
 			},
 			DebounceKey: string(AgentVibe) + ":sessions:" + root,
 		})
@@ -170,7 +170,7 @@ func vibeFindFile(root, rawID string) (singleFileMatch, bool) {
 
 // findVibeSourceFile locates a Vibe session by ID under root. Unified session
 // directories are named by their session ID, so a direct anchor path is tried
-// first. Legacy directory names end with the first eight characters of the ID.
+// first. Legacy sessions are resolved through meta.json.
 func findVibeSourceFile(root, sessionID string) string {
 	if !isSafeSinglePathComponent(sessionID) {
 		return ""
@@ -184,17 +184,21 @@ func findVibeSourceFile(root, sessionID string) string {
 	); isVibeMessagesFile(messagesPath) {
 		return messagesPath
 	}
-	candidates, err := filepath.Glob(filepath.Join(root, "session_*_"+sessionID[:min(8, len(sessionID))]))
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return ""
 	}
-	for _, candidate := range candidates {
-		messagesPath := filepath.Join(candidate, "messages.jsonl")
+	for _, entry := range entries {
+		if !isDirOrSymlink(entry, root) ||
+			!strings.HasPrefix(entry.Name(), "session_") {
+			continue
+		}
+		messagesPath := filepath.Join(root, entry.Name(), "messages.jsonl")
 		if !isVibeMessagesFile(messagesPath) {
 			continue
 		}
-		metaPath := filepath.Join(candidate, "meta.json")
-		if meta, err := parseVibeIdentityMetadata(metaPath); err == nil &&
+		metaPath := filepath.Join(root, entry.Name(), "meta.json")
+		if meta, err := parseVibeMetadata(metaPath); err == nil &&
 			meta.SessionID == sessionID {
 			return messagesPath
 		}

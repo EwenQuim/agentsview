@@ -469,6 +469,11 @@ keeps its default directories.
 | Zed                   | (platform-specific, see below)                                                                                                                                   | SQLite database (`threads/threads.db`)                                                                                                                        |
 | Zencoder              | `~/.zencoder/sessions/`                                                                                                                                          | JSONL per session                                                                                                                                             |
 
+Mistral Vibe unified sessions use the session's last pinned model for the
+whole session, falling back to the model recorded in `meta.json`. A session
+with no recorded model imports its transcript without a usage event. Imported
+history stays in both sessions. A turn still running appears once it finishes.
+
 OpenClaw checks both representations under each configured agent directory.
 The SQLite layout is one `agent/openclaw-agent.sqlite` file per agent. AgentsView
 reads it without writing or migrating the database.
