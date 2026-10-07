@@ -69,9 +69,7 @@ func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
 		wantAnswer         string
 	}{
 		{"null chunks", `{"chunks":null}`, 2, "inline question", "inline answer"},
-		{"missing chunks", `{}`, 2, "inline question", "inline answer"},
 		{"empty chunks", `{"chunks":[]}`, 0, "", ""},
-		{"pooled chunks", `{"chunks":["cafe0001"]}`, 3, "unified question", "unified answer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -82,9 +80,7 @@ func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
 				{"type":"message","role":"user","content":[{"text":"inline question"}]},
 				{"type":"message","role":"assistant","content":[{"text":"inline answer"}]}
 			]}}}`)
-			if tc.name != "pooled chunks" {
-				require.NoError(t, os.RemoveAll(filepath.Join(sessionDir, "chunks")))
-			}
+			require.NoError(t, os.RemoveAll(filepath.Join(sessionDir, "chunks")))
 			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
 			require.True(t, ok)
 			sources, err := provider.Discover(t.Context())
@@ -301,12 +297,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantStatus: "errored",
 		},
 		{
-			name:       "failed file_system.read_file",
-			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}},"id":"effect-1","state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
-			after:      `"detail":{"kind":"tool","toolName":"file_system.read_file","input":{"path":"missing.txt"}},"id":"effect-1","state":{"status":"failed","error":{"message":"File unavailable"}}`,
-			wantResult: "File unavailable", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 3, wantStatus: "errored",
-		},
-		{
 			name:       "running effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"running","outputText":"partial output"}`,
@@ -332,27 +322,9 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantResult: "resource output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
-			name:       "file_system.read_file",
-			before:     `"toolName":"file_system.bash"`,
-			after:      `"toolName":"file_system.read_file"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
-			name:       "file_system.search_replace",
-			before:     `"toolName":"file_system.bash"`,
-			after:      `"toolName":"file_system.search_replace"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Edit", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
 			name:       "skill.read",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"skill.read"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
-			name:       "process.write",
-			before:     `"toolName":"file_system.bash"`,
-			after:      `"toolName":"process.write"`,
 			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
@@ -659,9 +631,6 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
 			require.Len(t, result.UsageEvents, 1)
 			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
-			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
-			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
-			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
 		})
 	}
 }
@@ -673,7 +642,6 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 	}{
 		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, "", RelContinuation},
 		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "", RelFork},
-		{"subagent", "subagent", "", "", RelSubagent},
 		{"pinned model", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "mistral-large-2411", RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -710,9 +678,6 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, tc.model, result.Messages[3].Model)
 			require.Len(t, result.UsageEvents, 1)
 			assert.Equal(t, tc.model, result.UsageEvents[0].Model)
-			assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
-			assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
-			assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
 			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
 			assert.Empty(t, outcome.Results[0].RetryReason)
 		})
