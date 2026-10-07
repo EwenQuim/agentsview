@@ -472,7 +472,6 @@ keeps its default directories.
 Mistral Vibe labels each unified session with its last pinned model, falling
 back to `active_model` in `config.toml`, then `mistral-medium-3.5`. Config edits
 reprice sessions when they are reparsed, including during a full resync.
-A turn still running appears once it finishes.
 
 OpenClaw checks both representations under each configured agent directory.
 The SQLite layout is one `agent/openclaw-agent.sqlite` file per agent. AgentsView

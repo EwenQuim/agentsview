@@ -3532,8 +3532,6 @@ schemas keep their existing ordering behavior.
   transcript, and `projection-state.json` carries the aggregate
   `tokenUsage` and `contextUsage`. Before chunk pooling, the transcript stays
   in `snapshot.history.entries` when manifest `chunks` is null or missing.
-  Vibe folds the journal into a new generation when a turn finishes, so a
-  turn still in progress appears in Agentsview once it finishes.
 - **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at
   `0685654a40a4035966891289065379a751a7e617`; see
@@ -3574,12 +3572,13 @@ schemas keep their existing ordering behavior.
   copied from `vibe.userDisplayContent` metadata over expanded skill text.
   Notice and checkpoint entries leave pending reasoning in its turn.
   Effect results use output text, decoded content, `state.reason`, then
-  `state.error.message`. Terminal effects emit `tool_execution` start events at
-  `createdAt` and terminal events with output at `updatedAt`, without duplicate
-  result carriers. Failed and skipped effects use `errored`, cancelled
-  effects use `cancelled`, and completed effects use `completed`.
-  Reverified against `_projection.py` at the unified-storage commit above
-  on 2026-10-07.
+  `state.error.message`. Running and terminal effects emit `tool_execution`
+  start events at `createdAt` and status events with output at `updatedAt`,
+  without duplicate result carriers. Failed and skipped effects use `errored`.
+  Cancelled effects use `cancelled`, completed effects use `completed`, and
+  running effects use `running`.
+  Reverified against `_projection.py`, `_fork.py`, `_host.py`, and
+  `session_protocol.py` at the unified-storage commit above on 2026-10-07.
   `file_system.*` tools use the legacy categories;
   other namespaced tools use Other. `subagent.spawn` uses Task and links
   `detail.childSessionId` with the `vibe:` prefix.
@@ -3591,16 +3590,9 @@ schemas keep their existing ordering behavior.
   session directories for the matching `meta.json` session ID.
   Unified sessions reuse the same metadata shape; subagent sessions have no
   `meta.json` and fall back to the projection snapshot and runtime identity.
-  Runtime identity distinguishes forks and subagents. Imported sessions link
-  to their source as continuations. With `import_provenance` present, imports
-  and forks skip entries whose IDs start with `imported-` when the parent source
-  resolves across the configured Vibe roots. Legacy parent lookup uses the same
-  tolerant identity parse as ingestion. Unified parents require a `CURRENT`
-  pointer that resolves to a generation with readable, decodable manifest,
-  projection-state and runtime-state documents. Otherwise,
-  imports and forks keep all entries and request a reparse until the parent
-  arrives. Reverified against `_fork.py` at the unified-storage commit
-  above on 2026-10-07; `imported_entry_id` assigns the `imported-` prefix.
+  Runtime identity distinguishes forks and subagents. Imports and forks link
+  to their source and keep inherited entries. Imports use continuation links.
+  Imported history copies text without token usage, so only text repeats.
   Fingerprints hash only `CURRENT` and `meta.json`, because
   `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
