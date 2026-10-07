@@ -137,8 +137,7 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 
 	for _, changedPath := range []string{
 		anchor,
-		filepath.Join(sessionDir, "chunks", "cafe0001.json"),
-		filepath.Join(sessionDir, "generations", "0000000000000001", "manifest.json"),
+		filepath.Join(sessionDir, "meta.json"),
 	} {
 		changed, err := provider.SourcesForChangedPath(t.Context(), ChangedPathRequest{
 			Path: changedPath, EventKind: "write", WatchRoot: root,
@@ -148,9 +147,16 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 		assert.Equal(t, anchor, changed[0].DisplayPath)
 	}
 
+	require.NoError(t, os.Remove(filepath.Join(sessionDir, "meta.json")))
+	_, err = provider.Fingerprint(t.Context(), found)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(anchor))
+	_, err = provider.Fingerprint(t.Context(), found)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
 	require.NoError(t, os.RemoveAll(sessionDir))
 	changed, err := provider.SourcesForChangedPath(t.Context(), ChangedPathRequest{
-		Path:      filepath.Join(sessionDir, "chunks", "cafe0001.json"),
+		Path:      anchor,
 		EventKind: "remove",
 		WatchRoot: root,
 	})
@@ -312,10 +318,22 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantStatus: "cancelled",
 		},
 		{
+			name:       "resource-only result",
+			before:     `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
+			after:      `"content":[{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
+			wantResult: "resource output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+		},
+		{
 			name:       "file_system.read_file",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"file_system.read_file"`,
 			wantResult: "file-a\nfile-b", wantCategory: "Read", wantThinking: "checking the files", wantMessages: 3,
+		},
+		{
+			name:       "file_system.search_replace",
+			before:     `"toolName":"file_system.bash"`,
+			after:      `"toolName":"file_system.search_replace"`,
+			wantResult: "file-a\nfile-b", wantCategory: "Edit", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
 			name:       "skill.read",

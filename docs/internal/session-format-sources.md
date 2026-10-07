@@ -3538,7 +3538,7 @@ schemas keep their existing ordering behavior.
   [session_logger.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/core/session/session_logger.py)
   and
   [history_manager.py](https://github.com/mistralai/mistral-vibe/blob/0685654a40a4035966891289065379a751a7e617/vibe/cli/history_manager.py).
-  Unified storage was reverified on 2026-10-07 at
+  Unified storage source is pinned to
   `7cb91894c40bb25173abcfa36e5ea2b4b81eb28c`; see
   [_storage.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_storage.py),
   [_fork.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_fork.py),
@@ -3560,28 +3560,14 @@ schemas keep their existing ordering behavior.
   Context size is `contextUsage` input plus output tokens, matching
   `_context_tokens` in
   [_unified_harness_backend_adapter.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L9085).
-  Cumulative prompt tokens are not a context-size fallback. The producer writes
-  `runtime-state.json` in every generation; read and decode errors fail parsing.
-  Message and reasoning entries with `outcome.type` of `discarded` are skipped.
-  Reasoning attaches to the next assistant message or effect in its turn,
-  including across user or steering messages. A turn change or the end of
-  history flushes unmatched reasoning as a thinking-only assistant message,
-  timestamped with the last reasoning entry's positive `createdAt`.
-  Image and audio blocks display `[image]` and `[audio]`; resources display their
-  text or `[resource]`. User messages prefer the literal `userDisplayContent`
-  copied from `vibe.userDisplayContent` metadata over expanded skill text.
-  Notice and checkpoint entries leave pending reasoning in its turn.
-  Effect results use output text, decoded content, `state.reason`, then
-  `state.error.message`. Running and terminal effects emit `tool_execution`
-  start events at `createdAt` and status events with output at `updatedAt`,
-  without duplicate result carriers. Failed and skipped effects use `errored`.
-  Cancelled effects use `cancelled`, completed effects use `completed`, and
-  running effects use `running`.
+  The producer writes `runtime-state.json` in every generation. Message and
+  reasoning entries can carry `outcome.type: discarded`. `_projection.py`
+  copies `vibe.userDisplayContent` metadata into `userDisplayContent` and
+  preserves resource blocks with nested `resource.text`. Effect states use
+  `running`, `completed`, `failed`, `skipped`, or `cancelled`, with
+  `outputText`, `output.content`, `reason`, and `error.message` fields.
   Reverified against `_projection.py`, `_fork.py`, `_host.py`, and
   `session_protocol.py` at the unified-storage commit above on 2026-10-07.
-  `file_system.*` tools use the legacy categories;
-  other namespaced tools use Other. `subagent.spawn` uses Task and links
-  `detail.childSessionId` with the `vibe:` prefix.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
