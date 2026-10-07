@@ -24,6 +24,13 @@ The latest release is
   results. Subagent runs appear as child sessions. Usage reports include Muse
   token counts, priced at Meta's published Muse Spark and Muse Wonder rates.
   (#2241)
+- Mistral Vibe usage tracking no longer stops when the CLI switched to the
+  unified harness session store (around September 2026). Sessions under
+  `~/.vibe/logs/session/unified` sync again, with transcripts, tool calls,
+  subagent relationships, and daily token usage. Sessions that ran on the
+  CLI's default model are attributed to the `active_model` from
+  `~/.vibe/config.toml` because the new store records the model only when it
+  was overridden per session.
 - Browse and search the retained archive during full parser and archive-only
   preservation rebuilds with a stale warning; archive writes fail with a retryable
   503. Scoped upgrades and schema repairs finish before serving.
