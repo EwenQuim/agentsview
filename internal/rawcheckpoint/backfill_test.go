@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -209,7 +208,7 @@ func TestBackfillVersionEightMigrationPreservesQueueAndReceipt(t *testing.T) {
 	queued, found, err := store.QueueTombstone(t.Context(), gen.Source)
 	require.NoError(t, err)
 	require.True(t, found)
-	for _, statement := range []string{`DROP TRIGGER backfill_generation_deleted`, `DROP TABLE backfill_members`, `DROP TABLE backfill_roots`, `DROP TABLE backfill_providers`, `DROP TABLE backfill_runs`, `ALTER TABLE outbox_config DROP COLUMN destination`, `PRAGMA user_version=8`} {
+	for _, statement := range []string{`DROP INDEX raw_source_base_objects_object_idx`, `DROP TRIGGER backfill_generation_deleted`, `DROP TABLE backfill_members`, `DROP TABLE backfill_roots`, `DROP TABLE backfill_providers`, `DROP TABLE backfill_runs`, `ALTER TABLE outbox_config DROP COLUMN destination`, `PRAGMA user_version=8`} {
 		_, err = store.db.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
 	}
@@ -230,7 +229,7 @@ func TestBackfillVersionEightMigrationPreservesQueueAndReceipt(t *testing.T) {
 		"an older checkpoint's receipts cannot establish which server acknowledged them")
 	var version int
 	require.NoError(t, store.db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version))
-	require.Equal(t, 9, version)
+	require.Equal(t, schemaVersion, version)
 }
 
 func TestBackfillDestinationSurvivesReopenAndFencesWatch(t *testing.T) {
@@ -258,19 +257,6 @@ func TestBackfillDestinationSurvivesReopenAndFencesWatch(t *testing.T) {
 }
 
 func TestFreshSchemaMatchesVersionEightMigration(t *testing.T) {
-	schema := func(store *Store) map[string]string {
-		rows, err := store.db.QueryContext(t.Context(), `SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL`)
-		require.NoError(t, err)
-		defer rows.Close()
-		objects := map[string]string{}
-		for rows.Next() {
-			var kind, name, sql string
-			require.NoError(t, rows.Scan(&kind, &name, &sql))
-			objects[kind+" "+name] = strings.ReplaceAll(strings.Join(strings.Fields(sql), " "), " )", ")")
-		}
-		require.NoError(t, rows.Err())
-		return objects
-	}
 	fresh, err := Open(t.Context(), filepath.Join(t.TempDir(), "fresh.db"))
 	require.NoError(t, err)
 	defer fresh.Close()
@@ -278,7 +264,7 @@ func TestFreshSchemaMatchesVersionEightMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "migrated.db")
 	store, err := Open(t.Context(), path)
 	require.NoError(t, err)
-	for _, statement := range []string{`DROP TRIGGER backfill_generation_deleted`, `DROP TABLE backfill_members`, `DROP TABLE backfill_roots`, `DROP TABLE backfill_providers`, `DROP TABLE backfill_runs`, `ALTER TABLE outbox_config DROP COLUMN destination`, `PRAGMA user_version=8`} {
+	for _, statement := range []string{`DROP INDEX raw_source_base_objects_object_idx`, `DROP TRIGGER backfill_generation_deleted`, `DROP TABLE backfill_members`, `DROP TABLE backfill_roots`, `DROP TABLE backfill_providers`, `DROP TABLE backfill_runs`, `ALTER TABLE outbox_config DROP COLUMN destination`, `PRAGMA user_version=8`} {
 		_, err = store.db.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
 	}
@@ -287,7 +273,7 @@ func TestFreshSchemaMatchesVersionEightMigration(t *testing.T) {
 	require.NoError(t, err)
 	defer migrated.Close()
 
-	require.Equal(t, schema(fresh), schema(migrated))
+	require.Equal(t, schemaDefinitions(t, fresh.db), schemaDefinitions(t, migrated.db))
 }
 
 func TestBackfillSelectionWithInvalidUTF8RootStillDetectsChanges(t *testing.T) {
