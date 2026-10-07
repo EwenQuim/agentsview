@@ -33,8 +33,7 @@ import (
 // The public transcript is the projection chunks listed by the newest
 // generation's manifest, in listed order; each chunk is a JSON array of
 // harness public-session-state entries (message, reasoning, effect, notice,
-// checkpoint). Vibe folds the journal into a new generation when a turn finishes;
-// a turn still in progress appears once it finishes.
+// checkpoint).
 
 type vibeUnifiedCurrent struct {
 	Generation string `json:"generation"`
@@ -153,15 +152,15 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 	if err := json.Unmarshal(raw, &current); err != nil {
 		return "", fmt.Errorf("parsing Vibe unified CURRENT: %w", err)
 	}
-	if current.Generation == "" {
-		return "", fmt.Errorf("missing generation in Vibe unified CURRENT")
+	if !isSafeSinglePathComponent(current.Generation) {
+		return "", fmt.Errorf("invalid generation in Vibe unified CURRENT")
 	}
 	return filepath.Join(sessionDir, "generations", current.Generation), nil
 }
 
 // parseVibeUnifiedResultFile parses a unified harness session directory,
 // anchored on its CURRENT pointer, into a ParseResult.
-func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []string) (ParseResult, string, error) {
+func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResult, error) {
 	sessionDir := filepath.Dir(anchorPath)
 	dirName := filepath.Base(sessionDir)
 
@@ -178,31 +177,31 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []st
 
 	genDir, err := vibeUnifiedGenerationDir(sessionDir)
 	if err != nil {
-		return result, "", err
+		return result, err
 	}
 
-	manifest, err := readVibeUnifiedManifest(genDir)
-	if err != nil {
-		return result, "", err
+	var manifest vibeUnifiedManifest
+	if err := readVibeUnifiedDoc(genDir, "manifest.json", &manifest); err != nil {
+		return result, err
 	}
 
-	projection, err := readVibeUnifiedProjectionState(genDir)
-	if err != nil {
-		return result, "", err
+	var projection vibeUnifiedProjectionState
+	if err := readVibeUnifiedDoc(genDir, "projection-state.json", &projection); err != nil {
+		return result, err
 	}
 	projSession := projection.Snapshot.Session
 
 	_, _, _, err = applyVibeMetadata(&result, sessionDir)
 	if err != nil {
-		return result, "", err
+		return result, err
 	}
 	result.Session.ID = "vibe:" + dirName
 	result.Session.SourceSessionID = dirName
 	var parentID string
 
-	runtimeMeta, err := readVibeUnifiedRuntimeMetadata(genDir)
-	if err != nil {
-		return result, "", err
+	var runtimeMeta vibeUnifiedRuntimeMetadata
+	if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
+		return result, err
 	}
 	if result.Session.Cwd == "" {
 		result.Session.Cwd = runtimeMeta.SessionMetadata.Cwd
@@ -217,19 +216,6 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []st
 
 	if runtimeMeta.ImportProvenance != nil {
 		parentID = runtimeMeta.ImportProvenance.Source.SessionID
-	}
-	var retryReason string
-	skipImported := false
-	if runtimeMeta.ImportProvenance != nil && parentID != "" {
-		for _, root := range roots {
-			if findVibeSourceFile(root, parentID) != "" {
-				skipImported = true
-				break
-			}
-		}
-		if !skipImported {
-			retryReason = "vibe parent source unresolved for " + parentID
-		}
 	}
 
 	if result.Session.SessionName == "" {
@@ -271,9 +257,9 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []st
 		sessionsRoot := filepath.Dir(filepath.Dir(sessionDir))
 		sessionModel = firstNonEmptyJSONLString(vibeConfigModel(sessionsRoot), "mistral-medium-3.5")
 	}
-	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel, skipImported)
+	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
-		return result, "", err
+		return result, err
 	}
 	result.Messages = messages
 	setVibeMessageMetadata(&result)
@@ -288,16 +274,16 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo, roots []st
 		result.Session.StartedAt, result.Session.EndedAt,
 	)
 
-	return result, retryReason, nil
+	return result, nil
 }
 
 // parseVibeUnifiedChunks uses inline history unless the manifest names a chunk list.
-func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string, skipImported bool) ([]ParsedMessage, error) {
+func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string) ([]ParsedMessage, error) {
 	if chunkHashes != nil {
 		entries = nil
 		for _, chunkHash := range chunkHashes {
-			if chunkHash == "" {
-				continue
+			if !isSafeSinglePathComponent(chunkHash) {
+				return nil, fmt.Errorf("invalid Vibe unified chunk hash %q", chunkHash)
 			}
 			raw, err := os.ReadFile(filepath.Join(sessionDir, "chunks", chunkHash+".json"))
 			if err != nil {
@@ -328,9 +314,6 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 	}
 	for _, entry := range entries {
 		if entry.Type == "notice" || entry.Type == "checkpoint" {
-			continue
-		}
-		if skipImported && strings.HasPrefix(entry.ID, "imported-") {
 			continue
 		}
 		if (entry.Type == "message" || entry.Type == "reasoning") && entry.Outcome.Type == "discarded" {
@@ -389,7 +372,7 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 			content = literal
 		}
 	}
-	text := decodeContent(content)
+	var text string
 	if content.IsArray() {
 		var parts []string
 		for _, block := range content.Array() {
@@ -405,6 +388,8 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 			}
 		}
 		text = strings.Join(parts, "")
+	} else {
+		text = decodeContent(content)
 	}
 
 	msg := ParsedMessage{
@@ -422,7 +407,7 @@ func vibeUnifiedEntryMessage(entry vibeUnifiedEntry) ParsedMessage {
 	return msg
 }
 
-// Terminal events carry the result; unfinished effects retain a result carrier.
+// Execution events carry output for running and terminal effects.
 func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMessage, *ParsedMessage) {
 	if entry.ID == "" || entry.Detail == nil {
 		return nil, nil
@@ -474,7 +459,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 		case "failed", "skipped":
 			status = "errored"
 		}
-		if status == "completed" || status == "errored" || status == "cancelled" {
+		if status == "running" || status == "completed" || status == "errored" || status == "cancelled" {
 			event := ParsedToolResultEvent{ToolUseID: entry.ID, Source: "tool_execution", Status: status, Content: resultText}
 			if entry.UpdatedAt > 0 {
 				event.Timestamp = time.UnixMilli(entry.UpdatedAt)
@@ -490,40 +475,15 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) (*ParsedMess
 	return call, &carrier
 }
 
-func readVibeUnifiedManifest(genDir string) (vibeUnifiedManifest, error) {
-	var manifest vibeUnifiedManifest
-	raw, err := os.ReadFile(filepath.Join(genDir, "manifest.json"))
+func readVibeUnifiedDoc(genDir, name string, v any) error {
+	raw, err := os.ReadFile(filepath.Join(genDir, name))
 	if err != nil {
-		return manifest, fmt.Errorf("reading Vibe unified manifest: %w", err)
+		return fmt.Errorf("reading Vibe unified %s: %w", name, err)
 	}
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return manifest, fmt.Errorf("parsing Vibe unified manifest: %w", err)
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("parsing Vibe unified %s: %w", name, err)
 	}
-	return manifest, nil
-}
-
-func readVibeUnifiedProjectionState(genDir string) (vibeUnifiedProjectionState, error) {
-	var state vibeUnifiedProjectionState
-	raw, err := os.ReadFile(filepath.Join(genDir, "projection-state.json"))
-	if err != nil {
-		return state, fmt.Errorf("reading Vibe unified projection state: %w", err)
-	}
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return state, fmt.Errorf("parsing Vibe unified projection state: %w", err)
-	}
-	return state, nil
-}
-
-func readVibeUnifiedRuntimeMetadata(genDir string) (vibeUnifiedRuntimeMetadata, error) {
-	var meta vibeUnifiedRuntimeMetadata
-	raw, err := os.ReadFile(filepath.Join(genDir, "runtime-state.json"))
-	if err != nil {
-		return meta, fmt.Errorf("reading Vibe unified runtime state: %w", err)
-	}
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return meta, fmt.Errorf("parsing Vibe unified runtime state: %w", err)
-	}
-	return meta, nil
+	return nil
 }
 
 // Every reparse prices unpinned sessions using the current config.toml.
