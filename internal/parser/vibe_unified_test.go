@@ -475,7 +475,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"discarded answer"}],"outcome":{"type":"discarded"}},
 			{"type":"reasoning","turnId":"turn-1","text":"committed thinking","outcome":{"type":"committed"}},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"committed answer"}],"outcome":{"type":"committed"}}]`,
-			"committed answer", "committed thinking", 1, 0,
+			"discarded answer", "discarded thinking", 2, 0,
 		},
 		{
 			"notice and checkpoint preserve turn thinking",
@@ -528,8 +528,13 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 				assert.True(t, messages[0].Timestamp.IsZero())
 			}
 			if tc.wantMessages == 2 {
-				assert.Equal(t, "later answer", messages[1].Content)
-				assert.Empty(t, messages[1].ThinkingText)
+				if tc.name == "discarded stream tails" {
+					assert.Equal(t, "committed answer", messages[1].Content)
+					assert.Equal(t, "committed thinking", messages[1].ThinkingText)
+				} else {
+					assert.Equal(t, "later answer", messages[1].Content)
+					assert.Empty(t, messages[1].ThinkingText)
+				}
 				assert.Equal(t, 1, messages[1].Ordinal)
 			}
 		})
@@ -604,7 +609,7 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 		`{"identity":{"depth":1,"kind":"subagent",`+
 			`"parent_session_id":"`+parentID+`",`+
 			`"root_session_id":"`+parentID+`","session_id":"`+childID+`"},`+
-			`"session_metadata":{"active_model":"mistral-large-2411",`+
+			`"session_metadata":{`+
 			`"cwd":"/Users/dev/work/my-repo"}}`)
 
 	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
@@ -620,13 +625,22 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, outcome.Results, 1)
-	session := outcome.Results[0].Result.Session
+	result := outcome.Results[0].Result
+	session := result.Session
 
 	assert.Equal(t, "vibe:"+childID, session.ID)
 	assert.Equal(t, "vibe:"+parentID, session.ParentSessionID)
 	assert.Equal(t, RelSubagent, session.RelationshipType)
 	assert.Equal(t, "my_repo", session.Project)
 	assert.True(t, time.UnixMilli(1790601803600).Equal(session.StartedAt))
+	require.Len(t, result.Messages, 3)
+	assert.Empty(t, result.Messages[1].Model)
+	assert.Empty(t, result.Messages[2].Model)
+	require.Len(t, result.UsageEvents, 1)
+	assert.Empty(t, result.UsageEvents[0].Model)
+	assert.Equal(t, 1000, result.UsageEvents[0].InputTokens)
+	assert.Equal(t, 200, result.UsageEvents[0].OutputTokens)
+	assert.Equal(t, 500, result.UsageEvents[0].CacheReadInputTokens)
 }
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
@@ -637,7 +651,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, "", RelContinuation},
 		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "", RelFork},
 		{"subagent", "subagent", "", "", RelSubagent},
-		{"pinned model", "subagent", "", "mistral-large-2411", RelSubagent},
+		{"pinned model", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "mistral-large-2411", RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()

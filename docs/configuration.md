@@ -470,8 +470,8 @@ keeps its default directories.
 | Zencoder              | `~/.zencoder/sessions/`                                                                                                                                          | JSONL per session                                                                                                                                             |
 
 Mistral Vibe labels each unified session with its last recorded model pin in
-`runtime-state.json`. Sessions without a recorded model keep their token usage
-and show an unknown model.
+`runtime-state.json`. AgentsView stores tokens from sessions without a recorded
+model, but usage reports leave them out. Subagent sessions never record a model.
 
 OpenClaw checks both representations under each configured agent directory.
 The SQLite layout is one `agent/openclaw-agent.sqlite` file per agent. AgentsView

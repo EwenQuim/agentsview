@@ -3553,14 +3553,18 @@ schemas keep their existing ordering behavior.
   session uses only the recorded `runtime-state.json`
   `session_metadata.active_model`. Sessions without a pin keep their tokens
   with an empty model. Usage reports exclude these events from pricing and
-  totals. The producer pins the active model at each turn start in
+  totals. Subagent sessions never record a model; the producer builds child
+  metadata without one in
+  [_host.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/harness/runtimes/python/python/mistralai_vibe_local_harness/vibe/_host.py#L1501).
+  The producer pins the active model at each turn start in
   [_pin_session_model_choice](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L6301).
   Context size is `contextUsage` input plus output tokens, matching
   `_context_tokens` in
   [_unified_harness_backend_adapter.py](https://github.com/mistralai/mistral-vibe/blob/7cb91894c40bb25173abcfa36e5ea2b4b81eb28c/vibe/app_server/_unified_harness_backend_adapter.py#L9085).
   The producer writes `runtime-state.json` in every generation. Message and
-  reasoning entries can carry `outcome.type: discarded`. `_projection.py`
-  copies `vibe.userDisplayContent` metadata into `userDisplayContent` and
+  reasoning entries with `outcome.type: discarded` keep their visible content,
+  which Agentsview archives. `_projection.py` copies `vibe.userDisplayContent`
+  metadata into `userDisplayContent` and
   preserves resource blocks with nested `resource.text`. Effect states use
   `running`, `completed`, `failed`, `skipped`, or `cancelled`, with
   `outputText`, `output.content`, `reason`, and `error.message` fields.
@@ -3571,9 +3575,6 @@ schemas keep their existing ordering behavior.
   storage image policy handles their payloads. Message images remain text
   placeholders. `PublicMessageEntry` roles are `system`, `user`, or
   `assistant`; steering uses a user message with `source: turn_steer`.
-  Reverified against `_projection.py`, `_fork.py`, `_host.py`,
-  `session_protocol.py`, `_unified_harness_backend_adapter.py`, `models.py`,
-  and `protocol.py` at the unified-storage commit above on 2026-10-07.
 - **Project identity:** Metadata records `session_id`, `git_branch`, and
   `environment.working_directory`. Agentsview recovers those independent
   fields even when another optional metadata field is malformed, so a partial
