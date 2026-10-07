@@ -216,7 +216,11 @@ func findVibeSourceFile(root, sessionID string) string {
 	if isVibeMessagesFile(anchor) {
 		if genDir, err := vibeUnifiedGenerationDir(filepath.Dir(anchor)); err == nil {
 			if _, err := readVibeUnifiedManifest(genDir); err == nil {
-				return anchor
+				if _, err := readVibeUnifiedProjectionState(genDir); err == nil {
+					if _, err := readVibeUnifiedRuntimeMetadata(genDir); err == nil {
+						return anchor
+					}
+				}
 			}
 		}
 	}
