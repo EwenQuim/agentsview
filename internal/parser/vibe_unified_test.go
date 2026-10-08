@@ -148,7 +148,7 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.Remove(anchor))
 	_, err = provider.Fingerprint(t.Context(), found)
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 
 	require.NoError(t, os.RemoveAll(sessionDir))
 	changed, err := provider.SourcesForChangedPath(t.Context(), ChangedPathRequest{
