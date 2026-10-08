@@ -1,9 +1,6 @@
 import { MetadataService } from "../api/generated/index.js";
-import type {
-  DbSessionStats,
-  DbStatsOutcomeStats,
-  GetApiV1SessionStatsParams,
-} from "../api/generated/index.js";
+import type { DbStatsOutcomeStats } from "../api/generated/index.js";
+import { LatestRead } from "../utils/latest-read.js";
 
 /** The window the totals are read for. */
 export interface OutcomeWindow {
@@ -17,7 +14,7 @@ export interface OutcomeWindow {
   includeAutomated?: boolean;
 }
 
-type FetchStats = (params: GetApiV1SessionStatsParams) => Promise<DbSessionStats>;
+type FetchStats = typeof MetadataService.getApiV1SessionStats;
 
 /**
  * Reads the git and GitHub outcome totals for a window.
@@ -36,11 +33,8 @@ export class OutcomeTotalsStore {
   error = $state<string | null>(null);
   includePullRequests = $state(false);
 
-  /**
-   * Guards against a slow earlier window overwriting a later one: only the
-   * newest request may apply its result.
-   */
-  private requestSeq = 0;
+  /** Cancels replaced reads; only the newest request may apply its result. */
+  private readonly latest = new LatestRead();
 
   constructor(private readonly fetchStats: FetchStats = MetadataService.getApiV1SessionStats) {}
 
@@ -55,7 +49,7 @@ export class OutcomeTotalsStore {
   }
 
   reset(): void {
-    this.requestSeq += 1;
+    this.latest.cancel();
     this.stats = null;
     this.error = null;
     this.loading = false;
@@ -63,35 +57,38 @@ export class OutcomeTotalsStore {
   }
 
   private async read(window: OutcomeWindow, withPullRequests: boolean): Promise<void> {
-    const seq = ++this.requestSeq;
+    const signal = this.latest.begin();
     this.stats = null;
     this.error = null;
     this.loading = true;
     this.includePullRequests = withPullRequests;
     try {
-      const response = await this.fetchStats({
-        since: window.since,
-        until: window.until,
-        timezone: window.timezone,
-        agent: window.agent,
-        include_project: window.includeProject,
-        exclude_project: window.excludeProject,
-        include_one_shot: window.includeOneShot,
-        include_automated: window.includeAutomated,
-        include_git_outcomes: true,
-        include_github_outcomes: withPullRequests,
-      });
-      if (seq !== this.requestSeq) return;
+      const response = await this.fetchStats(
+        {
+          since: window.since,
+          until: window.until,
+          timezone: window.timezone,
+          agent: window.agent,
+          include_project: window.includeProject,
+          exclude_project: window.excludeProject,
+          include_one_shot: window.includeOneShot,
+          include_automated: window.includeAutomated,
+          include_git_outcomes: true,
+          include_github_outcomes: withPullRequests,
+        },
+        { signal },
+      );
+      if (!this.latest.isCurrent(signal)) return;
       // An absent block means the window had no repository to read, which is
       // not the same as a window with zero commits.
       this.stats = response.outcome_stats ?? null;
       this.error = null;
     } catch (cause) {
-      if (seq !== this.requestSeq) return;
+      if (!this.latest.isCurrent(signal)) return;
       this.stats = null;
       this.error = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      if (seq === this.requestSeq) this.loading = false;
+      if (this.latest.finish(signal)) this.loading = false;
     }
   }
 }
