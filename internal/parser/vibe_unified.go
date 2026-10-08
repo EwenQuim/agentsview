@@ -149,7 +149,7 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 		return "", fmt.Errorf("parsing Vibe unified CURRENT: %w", err)
 	}
 	if !isSafeSinglePathComponent(current.Generation) {
-		return "", fmt.Errorf("invalid generation in Vibe unified CURRENT")
+		return "", errors.New("invalid generation in Vibe unified CURRENT")
 	}
 	return filepath.Join(sessionDir, "generations", current.Generation), nil
 }
