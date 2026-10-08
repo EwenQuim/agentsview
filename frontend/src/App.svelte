@@ -616,6 +616,16 @@
     });
   });
 
+  function reportScreenView(): void {
+    if (settings.needsAuth && router.route !== "settings") return;
+    const screen = router.route === "token-usage" ? "usage" : router.route;
+    reportTelemetry("screen_viewed", { screen, surface: "web" });
+  }
+
+  $effect(() => {
+    reportScreenView();
+  });
+
   // Telemetry: one analytics_viewed per analytics page visit; token-usage is the usage page.
   let lastAnalyticsPage: string | null = null;
   $effect(() => {
@@ -802,6 +812,7 @@
     sync.checkForUpdate();
     sync.startPolling();
     const appOpenedCleanup = setupAppOpenedReporting();
+    window.addEventListener("focus", reportScreenView);
 
     const healthCleanup = setupVisibilityHealthCheck({
       onBackendDegraded: () => sync.markBackendDegraded(),
@@ -814,6 +825,7 @@
     });
     return () => {
       appOpenedCleanup();
+      window.removeEventListener("focus", reportScreenView);
       healthCleanup();
       cleanup();
       window.removeEventListener("show-about", showAbout);
