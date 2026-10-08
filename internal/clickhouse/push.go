@@ -66,6 +66,7 @@ func (s *Sync) PushWithOptions(
 		s.archiveKey(identityRevisionKeyBase),
 		s.archiveKey(mappingRevisionKeyBase),
 		s.archiveKey(usageSnapshotReadyKeyBase),
+		s.archiveKey(storedCountRepairKeyBase),
 	)
 	if err != nil {
 		return result, err
@@ -79,6 +80,26 @@ func (s *Sync) PushWithOptions(
 	full, reason := s.decideFull(opts, storedCutoff, storedScope)
 	if !full && meta[s.archiveKey(usageSnapshotReadyKeyBase)] == "" {
 		full, reason = true, "preparing complete usage snapshots"
+	}
+	// Rows from before stored_message_count, or from an older writer, read as unknown until a full push republishes them.
+	repairing := meta[s.archiveKey(storedCountRepairKeyBase)] != ""
+	if !repairing {
+		var unknown uint64
+		if err := conn.QueryRowContext(ctx,
+			"SELECT count() FROM sessions WHERE source_archive_id = ? AND stored_message_count IS NULL", s.archiveID,
+		).Scan(&unknown); err != nil {
+			return result, fmt.Errorf("reading clickhouse sessions without stored message counts: %w", err)
+		}
+		if unknown > 0 {
+			// Republishing fills the NULLs before every session lands, so keep repairing until a push finishes cleanly.
+			if err := writeMetadata(ctx, conn, map[string]string{s.archiveKey(storedCountRepairKeyBase): "1"}); err != nil {
+				return result, err
+			}
+			repairing = true
+		}
+	}
+	if !full && repairing {
+		full, reason = true, "publishing stored message counts"
 	}
 	localDeletion, err := s.local.SessionDeletionPublicationRevision(ctx)
 	if err != nil {
@@ -204,6 +225,9 @@ func (s *Sync) PushWithOptions(
 				return result, fmt.Errorf("reading usage snapshot completion time: %w", err)
 			}
 			pushed[s.archiveKey(usageSnapshotReadyKeyBase)] = completed
+		}
+		if repairing {
+			pushed[s.archiveKey(storedCountRepairKeyBase)] = ""
 		}
 		if err := writeMetadata(ctx, conn, pushed); err != nil {
 			return result, err
@@ -808,7 +832,7 @@ func (s *Sync) sessionRow(p sessionPayload, fingerprint string, version uint64) 
 		nullString(sess.TerminationStatus),
 		int64(sess.SecretLeakCount), sess.SecretsRulesVersion,
 		lastMessageAt(p.messages), fingerprint, s.archiveID,
-		version,
+		int64(len(p.messages)), version,
 	}
 }
 

@@ -72,7 +72,7 @@
   import { sessions, filtersToParams } from "./lib/stores/sessions.svelte.js";
   import { messages } from "./lib/stores/messages.svelte.js";
   import { sync } from "./lib/stores/sync.svelte.js";
-  import { ui } from "./lib/stores/ui.svelte.js";
+  import { parseScrollCall, ui, type ScrollCall } from "./lib/stores/ui.svelte.js";
   import { router } from "./lib/stores/router.svelte.js";
   import { starred } from "./lib/stores/starred.svelte.js";
   import { pins } from "./lib/stores/pins.svelte.js";
@@ -119,7 +119,7 @@
 
   let messageListRef:
     | {
-        scrollToOrdinal: (o: number) => void;
+        scrollToOrdinal: (o: number, call?: ScrollCall) => void;
         getDisplayItems: () => DisplayItem[];
         getNormalDisplayItems: () => DisplayItem[];
       }
@@ -269,12 +269,15 @@
         }
       }
 
-      messageListRef.scrollToOrdinal(ordinal);
-      // Ensure highlight is set (the session-change effect
-      // may have cleared it before this effect ran).
-      ui.selectedOrdinal = ordinal;
+      const call = ui.pendingScrollCall;
       ui.pendingScrollOrdinal = null;
       ui.pendingScrollSession = null;
+      ui.pendingScrollCall = null;
+      // Ensure highlight is set (the session-change effect
+      // may have cleared it before this effect ran). The list clears it
+      // again when the message no longer holds the expected call.
+      ui.selectedOrdinal = ordinal;
+      messageListRef.scrollToOrdinal(ordinal, call ?? undefined);
     });
   });
 
@@ -657,6 +660,11 @@
   $effect(() => {
     const sid = router.sessionId;
     const msgParam = router.params["msg"] ?? null;
+    const call = parseScrollCall(
+      router.params["call"],
+      router.params["tool_use_id"],
+      router.params["rev"],
+    );
     untrack(() => {
       if (!sid || !msgParam) return;
       if (msgParam === "last") {
@@ -665,7 +673,7 @@
       } else {
         const ordinal = parseInt(msgParam, 10);
         if (Number.isFinite(ordinal)) {
-          ui.scrollToOrdinal(ordinal, sid);
+          ui.scrollToOrdinal(ordinal, sid, call);
         }
       }
     });

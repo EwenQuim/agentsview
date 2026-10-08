@@ -137,4 +137,5 @@ var derivedSessionColumns = map[string]string{
 	"last_message_at":             "derived from the messages the fingerprint hashes",
 	"agentsview_push_fingerprint": "the fingerprint itself",
 	"source_archive_id":           "push bookkeeping",
+	"stored_message_count":        "derived from the messages the fingerprint hashes",
 }
