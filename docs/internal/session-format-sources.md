@@ -3588,8 +3588,12 @@ schemas keep their existing ordering behavior.
   Runtime identity distinguishes forks and subagents. Imports and forks link
   to their source and keep inherited entries. Imports use continuation links.
   Imported history copies text without token usage, so only text repeats.
-  Fingerprints hash only `CURRENT` and `meta.json`, because
+  Fingerprints hash `CURRENT` and `meta.json`, because
   `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.
+  When a session has no recorded model, its fingerprint also includes its
+  parent's recorded model, empty while unavailable. Reverified 2026-10-07
+  with `TestVibeUnifiedProviderParseSubagentSession`: parent model changes
+  and recovery change the child's hash without changing its size or mtime.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

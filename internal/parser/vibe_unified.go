@@ -248,14 +248,8 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		result.Session.PeakContextTokens = contextTokens
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
-	if sessionModel == "" && isSafeSinglePathComponent(runtimeMeta.Identity.ParentSessionID) {
-		parentDir := filepath.Join(filepath.Dir(sessionDir), runtimeMeta.Identity.ParentSessionID)
-		if parentGenDir, err := vibeUnifiedGenerationDir(parentDir); err == nil {
-			var parentMeta vibeUnifiedRuntimeMetadata
-			if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err == nil {
-				sessionModel = parentMeta.SessionMetadata.ActiveModel
-			}
-		}
+	if sessionModel == "" {
+		sessionModel = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
 	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
@@ -506,7 +500,23 @@ func vibeUnifiedToolResultContent(content gjson.Result) string {
 	return string(encoded)
 }
 
-// CURRENT pins the manifest and its documents by digest.
+func vibeUnifiedParentModel(sessionDir, parentID string) string {
+	if !isSafeSinglePathComponent(parentID) {
+		return ""
+	}
+	parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
+	parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
+	if err != nil {
+		return ""
+	}
+	var parentMeta vibeUnifiedRuntimeMetadata
+	if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err != nil {
+		return ""
+	}
+	return parentMeta.SessionMetadata.ActiveModel
+}
+
+// CURRENT pins the manifest and its documents by digest; inherited models can change independently.
 func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 	var size, mtime int64
 	hash := sha256.New()
@@ -526,6 +536,17 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 		if err := addSiblingMetadataFingerprintPart(hash, filepath.Base(path), path, info); err != nil {
 			return SourceFingerprint{}, err
 		}
+	}
+	genDir, err := vibeUnifiedGenerationDir(sessionDir)
+	if err != nil {
+		return SourceFingerprint{}, err
+	}
+	var runtimeMeta vibeUnifiedRuntimeMetadata
+	if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
+		return SourceFingerprint{}, err
+	}
+	if runtimeMeta.SessionMetadata.ActiveModel == "" {
+		_, _ = fmt.Fprintf(hash, "parent-model:%s\n", vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID))
 	}
 	return SourceFingerprint{Size: size, MTimeNS: mtime, Hash: hex.EncodeToString(hash.Sum(nil))}, nil
 }

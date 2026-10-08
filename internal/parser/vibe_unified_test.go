@@ -631,6 +631,22 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
 			require.Len(t, result.UsageEvents, 1)
 			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
+
+			parentDir := filepath.Join(root, "unified", parentID)
+			writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"0000000000000003"}`)
+			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "runtime-state.json"), `{"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
+			updatedFingerprint, err := provider.Fingerprint(t.Context(), source)
+			require.NoError(t, err)
+			assert.NotEqual(t, fingerprint.Hash, updatedFingerprint.Hash)
+			assert.Equal(t, fingerprint.Size, updatedFingerprint.Size)
+			assert.Equal(t, fingerprint.MTimeNS, updatedFingerprint.MTimeNS)
+			outcome, err = provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: updatedFingerprint})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			result = outcome.Results[0].Result
+			assert.Equal(t, "mistral-medium-3.5", result.Messages[1].Model)
+			require.Len(t, result.UsageEvents, 1)
+			assert.Equal(t, "mistral-medium-3.5", result.UsageEvents[0].Model)
 		})
 	}
 }
