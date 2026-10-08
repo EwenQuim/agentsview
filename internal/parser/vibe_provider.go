@@ -334,5 +334,9 @@ func vibeProviderCapabilities() Capabilities {
 			AggregateUsageEvents: CapabilitySupported,
 			Model:                CapabilitySupported,
 		},
+		Sync: ProviderSyncSemantics{
+			FingerprintHashInCacheKey:           true,
+			FingerprintHashRequiredForFreshness: true,
+		},
 	}
 }
