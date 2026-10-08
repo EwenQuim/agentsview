@@ -93,7 +93,7 @@ func TestTelemetryCaptureRoute(t *testing.T) {
 		{
 			name: "oversized body", srv: authSrv, body: oversized,
 			origin: origin, token: "test-token",
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusRequestEntityTooLarge,
 		},
 	}
 	for _, tt := range tests {

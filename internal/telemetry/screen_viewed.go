@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,10 @@ import (
 func (r *Reporter) screenViewHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+			http.Error(w, "telemetry request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		if err != nil {
 			http.Error(w, "invalid telemetry request", http.StatusBadRequest)
 			return

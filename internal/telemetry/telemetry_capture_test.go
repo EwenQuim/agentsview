@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	kittelemetry "go.kenn.io/kit/telemetry"
+	kittelemetry "go.kenn.io/kit/telemetry/posthog"
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/dbtest"
@@ -241,7 +241,7 @@ func captureCollector(t *testing.T) (string, func() []map[string]any) {
 
 func captureReporter(t *testing.T, endpoint string, opts Options) *Reporter {
 	t.Helper()
-	client, err := kittelemetry.NewPostHogReporter(kittelemetry.PostHogOptions{
+	client, err := kittelemetry.NewReporter(kittelemetry.Options{
 		APIKey: "phc_test", Application: application, EnvPrefix: envPrefix,
 		DistinctID: "install-id", Source: "daemon", Endpoint: endpoint,
 	}, allowedEventOptions(opts)...)

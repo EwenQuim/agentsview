@@ -120,6 +120,7 @@ The latest published release is
 
 **Improvements**
 
+- Dashboard repository discovery reuses unchanged Git trust settings, reducing repeated Git launches.
 - The daemon sends its anonymous `daemon_active` ping at most once per UTC day,
   even when it restarts often or several servers share a data directory. A
   server that stays up sends one ping for each UTC day it runs.
@@ -225,6 +226,7 @@ The latest published release is
 
 **Bug fixes**
 
+- Oversized telemetry requests return HTTP 413.
 - Hosted raw sync keeps a session listed and searchable after its source file
   disappears from the device that uploaded it, matching the local archive.
   Before, `raw-sync watch` reporting a missing file hid the session, emptied it
