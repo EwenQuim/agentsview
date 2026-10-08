@@ -199,6 +199,62 @@ input. The suffix is part of the generation fingerprint, so changing it
 (including setting it for the first time) re-embeds the whole archive on the
 next build.
 
+#### EmbeddingGemma 2 text endpoint
+
+You can use EmbeddingGemma 2 for text search through any OpenAI-compatible
+endpoint that serves it. This recipe targets `google/embeddinggemma-2` at
+checkpoint revision `914f7f89142e33e77833254d9c9b90c3cef7303b`, with its native
+768-dimensional output. AgentsView sends only text; it does not embed images,
+audio, or video.
+
+```toml
+[vector]
+enabled = true
+
+[vector.embeddings]
+model = "embeddinggemma-2-914f7f89-text-768" # your serving alias
+dimension = 768
+query_prefix = "task: search result | query: "
+document_prefix = "title: none | text: "
+
+[vector.embeddings.servers.local]
+endpoint = "http://127.0.0.1:8000/v1"       # your endpoint
+batch_size = 4
+concurrency = 1
+timeout = "120s"
+```
+
+The prompts match the [EmbeddingGemma v1 example](#role-aware-task-prefixes) and
+the checkpoint's `config_sentence_transformers.json`. Keep the trailing spaces,
+leave `input_suffix` empty, and don't configure the endpoint to add the prompts
+again. The batch, concurrency, and timeout values are a cautious starting point
+for CPU serving, not measured settings.
+
+AgentsView can't see how the endpoint runs the model. The operator must serve
+the alias with this checkpoint and its tokenizer, mean pooling that includes the
+prompt tokens, and L2 normalization, using `bfloat16` or `float32`. The model
+card warns that `float16` produces NaN or degraded embeddings. AgentsView
+rejects vectors that are non-finite, all zero, or not exactly 768 wide, and
+stores the rest unchanged. Search uses cosine similarity, so vector length does
+not affect ranking. When you change any part of the serving recipe, change
+`model` to a new alias so AgentsView builds a new generation.
+
+The model accepts 8192 tokens per input, counting the prompt and special tokens.
+The endpoint must enforce that limit, because `max_input_chars` counts runes,
+not tokens. Leave headroom as described in
+[Role-aware task prefixes](#role-aware-task-prefixes).
+
+For 512, 256, or 128 dimensions, set `dimension` and `request_dimensions = true`
+only if the endpoint truncates and re-normalizes server-side. See
+[Reduced output dimensions](#reduced-output-dimensions-matryoshka).
+
+Sources: the
+[EmbeddingGemma 2 model card](https://ai.google.dev/gemma/docs/embeddinggemma/model_card_2)
+and the
+[pinned checkpoint files](https://huggingface.co/google/embeddinggemma-2/tree/914f7f89142e33e77833254d9c9b90c3cef7303b)
+(`config_sentence_transformers.json`, `1_Pooling/config.json`, and
+`modules.json`).
+
 ### Reduced output dimensions (Matryoshka)
 
 Matryoshka-trained embedding models — Qwen3-Embedding, OpenAI's
