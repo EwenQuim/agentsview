@@ -249,7 +249,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
 	if sessionModel == "" {
-		sessionModel = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		sessionModel, _ = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
 	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
@@ -500,20 +500,24 @@ func vibeUnifiedToolResultContent(content gjson.Result) string {
 	return string(encoded)
 }
 
-func vibeUnifiedParentModel(sessionDir, parentID string) string {
+func vibeUnifiedParentModel(sessionDir, parentID string) (string, int64) {
 	if !isSafeSinglePathComponent(parentID) {
-		return ""
+		return "", 0
 	}
 	parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
 	parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	var parentMeta vibeUnifiedRuntimeMetadata
 	if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err != nil {
-		return ""
+		return "", 0
 	}
-	return parentMeta.SessionMetadata.ActiveModel
+	info, err := os.Stat(filepath.Join(parentDir, "CURRENT"))
+	if err != nil {
+		return parentMeta.SessionMetadata.ActiveModel, 0
+	}
+	return parentMeta.SessionMetadata.ActiveModel, info.ModTime().UnixNano()
 }
 
 // CURRENT pins the manifest and its documents by digest; inherited models can change independently.
@@ -546,7 +550,9 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 		return SourceFingerprint{}, err
 	}
 	if runtimeMeta.SessionMetadata.ActiveModel == "" {
-		_, _ = fmt.Fprintf(hash, "parent-model:%s\n", vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID))
+		parentModel, parentMtime := vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		_, _ = fmt.Fprintf(hash, "parent-model:%s\n", parentModel)
+		mtime = max(mtime, parentMtime)
 	}
 	return SourceFingerprint{Size: size, MTimeNS: mtime, Hash: hex.EncodeToString(hash.Sum(nil))}, nil
 }
