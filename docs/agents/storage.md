@@ -210,6 +210,13 @@ backend at compile time, so a missing method fails `go build`.
 | Replica | PostgreSQL, ClickHouse | `db.Store` plus `storage.Replica`          |
 | Mirror  | DuckDB                 | `db.Store` plus `storage.Mirror`           |
 
+`internal/db` owns shared result processing: `NormalizeSessionLimit` and
+`BuildSessionPage` for pagination, `BuildHeatmapResponse` for daily levels,
+`TrendAccumulator` for term date filtering, buckets, and counts, and
+`MessageScope` with `AnalyticsFilter.MessageScopeFilter` for model-scoped
+projections. Backends retain their queries, cursor codecs, and timestamp
+scanning.
+
 A replica is a remote database the archive pushes into and that serves the web
 UI read-only. A replica may keep its push cursor in the archive sync state
 (PostgreSQL) or in its own metadata (ClickHouse); the contract does not care. A

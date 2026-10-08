@@ -307,7 +307,7 @@ func (s *Store) getAnalyticsModelScopedMessages(
 	if scope == nil {
 		return map[string][]db.ScopedMessage{}, nil
 	}
-	return scope.MessagesBySession(), nil
+	return scope, nil
 }
 
 func (s *Store) getAnalyticsFilteredMessageStats(
@@ -515,10 +515,8 @@ func (s *Store) filteredSessionIDsModel(
 		return nil, err
 	}
 	ids := make(map[string]bool)
-	if scope != nil {
-		for id := range scope.MessagesBySession() {
-			ids[id] = true
-		}
+	for id := range scope {
+		ids[id] = true
 	}
 	return ids, nil
 }
@@ -554,7 +552,7 @@ func (s *Store) getModelScopedToolCallCounts(
 		return counts, nil
 	}
 
-	flt := messageScopeFilter(f)
+	flt := f.MessageScopeFilter()
 	loc := analyticsLocation(f)
 	if err := pgQueryChunked(sessionIDs, func(chunk []string) error {
 		pb := &paramBuilder{}
@@ -1252,92 +1250,6 @@ func (s *Store) mergeActivityToolCalls(
 
 // --- Heatmap ---
 
-// MaxHeatmapDays is the maximum number of day entries.
-const MaxHeatmapDays = 366
-
-// clampFrom returns from clamped so [from, to] spans at
-// most MaxHeatmapDays.
-func clampFrom(from, to string) string {
-	start, err := time.Parse("2006-01-02", from)
-	if err != nil {
-		return from
-	}
-	end, err := time.Parse("2006-01-02", to)
-	if err != nil {
-		return from
-	}
-	earliest := end.AddDate(0, 0, -(MaxHeatmapDays - 1))
-	if start.Before(earliest) {
-		return earliest.Format("2006-01-02")
-	}
-	return from
-}
-
-// computeQuartileLevels computes thresholds from sorted
-// values.
-func computeQuartileLevels(
-	sorted []int,
-) db.HeatmapLevels {
-	if len(sorted) == 0 {
-		return db.HeatmapLevels{
-			L1: 1, L2: 2, L3: 3, L4: 4,
-		}
-	}
-	n := len(sorted)
-	return db.HeatmapLevels{
-		L1: sorted[0],
-		L2: sorted[n/4],
-		L3: sorted[n/2],
-		L4: sorted[n*3/4],
-	}
-}
-
-// assignLevel determines the heatmap level (0-4) for a value.
-func assignLevel(value int, levels db.HeatmapLevels) int {
-	if value <= 0 {
-		return 0
-	}
-	if value <= levels.L2 {
-		return 1
-	}
-	if value <= levels.L3 {
-		return 2
-	}
-	if value <= levels.L4 {
-		return 3
-	}
-	return 4
-}
-
-// buildDateEntries creates a HeatmapEntry for each day in
-// [from, to].
-func buildDateEntries(
-	from, to string,
-	values map[string]int,
-	levels db.HeatmapLevels,
-) []db.HeatmapEntry {
-	start, err := time.Parse("2006-01-02", from)
-	if err != nil {
-		return nil
-	}
-	end, err := time.Parse("2006-01-02", to)
-	if err != nil {
-		return nil
-	}
-
-	entries := []db.HeatmapEntry{}
-	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-		date := d.Format("2006-01-02")
-		v := values[date]
-		entries = append(entries, db.HeatmapEntry{
-			Date:  date,
-			Value: v,
-			Level: assignLevel(v, levels),
-		})
-	}
-	return entries
-}
-
 // GetAnalyticsHeatmap returns daily counts with intensity
 // levels.
 func (s *Store) GetAnalyticsHeatmap(
@@ -1458,38 +1370,7 @@ func (s *Store) GetAnalyticsHeatmap(
 		source = dayOutputTokens
 	}
 
-	// For output_tokens, an empty source means no sessions
-	// reported token coverage. Return an empty heatmap so the
-	// UI can show "no data" instead of a misleading zero grid.
-	if metric == "output_tokens" && len(source) == 0 {
-		return db.HeatmapResponse{
-			Metric:      metric,
-			EntriesFrom: clampFrom(f.From, f.To),
-		}, nil
-	}
-
-	entriesFrom := clampFrom(f.From, f.To)
-
-	var values []int
-	for date, v := range source {
-		if v > 0 && date >= entriesFrom && date <= f.To {
-			values = append(values, v)
-		}
-	}
-	sort.Ints(values)
-
-	levels := computeQuartileLevels(values)
-
-	entries := buildDateEntries(
-		entriesFrom, f.To, source, levels,
-	)
-
-	return db.HeatmapResponse{
-		Metric:      metric,
-		Entries:     entries,
-		Levels:      levels,
-		EntriesFrom: entriesFrom,
-	}, nil
+	return db.BuildHeatmapResponse(f.From, f.To, metric, source), nil
 }
 
 // --- Projects ---
@@ -1810,15 +1691,13 @@ func (s *Store) getAnalyticsHourOfWeekFilteredByModel(
 	}
 
 	var grid [7][24]int
-	if scope != nil {
-		for _, msgs := range scope.MessagesBySession() {
-			for _, m := range msgs {
-				if !m.HasLocalTime {
-					continue
-				}
-				dow := (int(m.LocalTime.Weekday()) + 6) % 7
-				grid[dow][m.LocalTime.Hour()]++
+	for _, msgs := range scope {
+		for _, m := range msgs {
+			if !m.HasLocalTime {
+				continue
 			}
+			dow := (int(m.LocalTime.Weekday()) + 6) % 7
+			grid[dow][m.LocalTime.Hour()]++
 		}
 	}
 

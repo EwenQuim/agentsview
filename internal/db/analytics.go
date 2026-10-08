@@ -352,7 +352,7 @@ func (db *DB) getAnalyticsModelScopedMessages(
 	if scope == nil {
 		return map[string][]ScopedMessage{}, nil
 	}
-	return scope.MessagesBySession(), nil
+	return scope, nil
 }
 
 func (db *DB) getAnalyticsFilteredMessageStats(
@@ -925,10 +925,8 @@ func (db *DB) filteredSessionIDsModel(
 		return nil, err
 	}
 	ids := make(map[string]bool)
-	if scope != nil {
-		for id := range scope.MessagesBySession() {
-			ids[id] = true
-		}
+	for id := range scope {
+		ids[id] = true
 	}
 	return ids, nil
 }
@@ -1422,7 +1420,7 @@ func (db *DB) getModelScopedToolCallCounts(
 	if len(sessionIDs) == 0 || strings.TrimSpace(f.Model) == "" {
 		return counts, nil
 	}
-	flt := f.messageScopeFilter()
+	flt := f.MessageScopeFilter()
 	loc := f.location()
 	if err := queryChunked(sessionIDs, func(chunk []string) error {
 		ph, args := inPlaceholders(chunk)
@@ -1879,7 +1877,6 @@ func (db *DB) GetAnalyticsHeatmap(
 		}
 	}
 
-	// Choose which map to use based on metric
 	source := dayCounts
 	switch metric {
 	case "sessions":
@@ -1887,43 +1884,31 @@ func (db *DB) GetAnalyticsHeatmap(
 	case "output_tokens":
 		source = dayOutputTokens
 	}
+	return BuildHeatmapResponse(f.From, f.To, metric, source), nil
+}
 
-	// For output_tokens, an empty source means no sessions
-	// reported token coverage. Return an empty heatmap so the
-	// UI can show "no data" instead of a misleading zero grid.
+// BuildHeatmapResponse builds one entry per day in [from, to], clamped to
+// MaxHeatmapDays, with quartile levels from the displayed days' values. An
+// output_tokens source with no days means no session reported token coverage,
+// so the response has no entries and the UI shows "no data".
+func BuildHeatmapResponse(
+	from, to, metric string, source map[string]int,
+) HeatmapResponse {
+	entriesFrom := clampFrom(from, to)
+	out := HeatmapResponse{Metric: metric, EntriesFrom: entriesFrom}
 	if metric == "output_tokens" && len(source) == 0 {
-		return HeatmapResponse{
-			Metric:      metric,
-			EntriesFrom: clampFrom(f.From, f.To),
-		}, nil
+		return out
 	}
-
-	// Determine effective date range (clamped to MaxHeatmapDays)
-	entriesFrom := clampFrom(f.From, f.To)
-
-	// Collect non-zero values from the displayed range only,
-	// so outliers outside the window don't skew intensity.
 	var values []int
-	for date, v := range source {
-		if v > 0 && date >= entriesFrom && date <= f.To {
-			values = append(values, v)
+	for date, value := range source {
+		if value > 0 && date >= entriesFrom && date <= to {
+			values = append(values, value)
 		}
 	}
 	sort.Ints(values)
-
-	levels := computeQuartileLevels(values)
-
-	// Build entries for each day in the clamped range
-	entries := buildDateEntries(
-		entriesFrom, f.To, source, levels,
-	)
-
-	return HeatmapResponse{
-		Metric:      metric,
-		Entries:     entries,
-		Levels:      levels,
-		EntriesFrom: entriesFrom,
-	}, nil
+	out.Levels = computeQuartileLevels(values)
+	out.Entries = buildDateEntries(entriesFrom, to, source, out.Levels)
+	return out
 }
 
 // computeQuartileLevels computes thresholds from sorted values.
@@ -2328,16 +2313,14 @@ func (db *DB) getAnalyticsHourOfWeekFilteredByModel(
 	}
 
 	var grid [7][24]int
-	if scope != nil {
-		for _, msgs := range scope.MessagesBySession() {
-			for _, m := range msgs {
-				if !m.HasLocalTime {
-					continue
-				}
-				// Go Sunday=0, convert to ISO Monday=0
-				dow := (int(m.LocalTime.Weekday()) + 6) % 7
-				grid[dow][m.LocalTime.Hour()]++
+	for _, msgs := range scope {
+		for _, m := range msgs {
+			if !m.HasLocalTime {
+				continue
 			}
+			// Go Sunday=0, convert to ISO Monday=0
+			dow := (int(m.LocalTime.Weekday()) + 6) % 7
+			grid[dow][m.LocalTime.Hour()]++
 		}
 	}
 
