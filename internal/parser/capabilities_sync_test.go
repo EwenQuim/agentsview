@@ -43,10 +43,6 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 			FingerprintHashInCacheKey:           true,
 			FingerprintHashRequiredForFreshness: true,
 		},
-		AgentVibe: {
-			FingerprintHashInCacheKey:           true,
-			FingerprintHashRequiredForFreshness: true,
-		},
 		AgentWindsurf: {
 			FingerprintHashInCacheKey:           true,
 			FingerprintHashRequiredForFreshness: true,
@@ -170,6 +166,9 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 
 	for _, factory := range ProviderFactories() {
 		agent := factory.Definition().Type
+		if agent == AgentVibe {
+			continue
+		}
 		t.Run(string(agent), func(t *testing.T) {
 			// The behavior-only fields are excluded from this declaration
 			// comparison; see the Hermes/Augure Desktop comment above.

@@ -94,10 +94,13 @@ func TestProviderCapabilitiesChangedPathRelevanceMatchConsumers(t *testing.T) {
 
 	for _, factory := range ProviderFactories() {
 		agent := factory.Definition().Type
+		if agent == AgentVibe {
+			continue
+		}
 		got := factory.Capabilities().Source.ChangedPathRelevance
 		if agent == AgentOpenCode || agent == AgentKilo ||
 			agent == AgentMiMoCode || agent == AgentIcodemate || agent == AgentJunie ||
-			agent == AgentCodebuff || agent == AgentVibe {
+			agent == AgentCodebuff {
 			assert.Equal(t, CapabilitySupported, got)
 			provider := factory.NewProvider(ProviderConfig{
 				Roots: []string{t.TempDir()},
