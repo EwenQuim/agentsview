@@ -441,7 +441,7 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 		ToolCalls: []ParsedToolCall{{
 			ToolUseID: entry.ID,
 			ToolName:  toolName,
-			Category:  NormalizeToolCategory(strings.TrimPrefix(toolName, "file_system.")),
+			Category:  vibeToolCategory(toolName),
 			InputJSON: inputJSON,
 		}},
 	}

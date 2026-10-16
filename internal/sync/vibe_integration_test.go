@@ -93,6 +93,55 @@ func TestSyncAllSinceVibeMetaUpdateTriggersResync(t *testing.T) {
 	})
 }
 
+func TestSyncAllVibeReparsesLegacySearchReplaceCategory(t *testing.T) {
+	root := t.TempDir()
+	database := dbtest.OpenTestDB(t)
+	const sourceID = "abc123def-0000-0000-0000-000000000000"
+	const sessionID = "vibe:" + sourceID
+	path, _ := writeVibeSyncFixture(t, root, "session_20260616_083518_abc123", sourceID, "Edit a file")
+	require.NoError(t, os.WriteFile(path, []byte(`{"role":"assistant","tool_calls":[{"id":"edit-1","function":{"name":"search_replace","arguments":{"file_path":"example.txt","old_string":"before","new_string":"after"}}}]}`+"\n"), 0o644))
+	config := sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, Machine: "local"}
+	engine := sync.NewEngine(t.Context(), database, config)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	engine.Close()
+
+	// Retain the verified source fingerprint while seeding the output of v134.
+	session, err := database.GetSessionFull(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	messages, err := database.GetAllMessages(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Len(t, messages[0].ToolCalls, 1)
+	messages[0].ToolCalls[0].Category = "Other"
+	result, err := database.WriteSessionBatchContext(t.Context(), []db.SessionBatchWrite{{
+		Session: *session, Messages: messages, DataVersion: 134, ReplaceMessages: true, SkipSignalUpdates: true,
+	}})
+	require.NoError(t, err)
+	require.Empty(t, result.Errors)
+	require.Equal(t, 134, database.GetSessionDataVersion(t.Context(), sessionID))
+	messages, err = database.GetAllMessages(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Len(t, messages[0].ToolCalls, 1)
+	require.Equal(t, "Other", messages[0].ToolCalls[0].Category)
+
+	engine = sync.NewEngine(t.Context(), database, config)
+	t.Cleanup(engine.Close)
+	stats := engine.SyncAll(t.Context(), nil)
+	assert.Equal(t, 1, stats.Synced)
+	session, err = database.GetSessionFull(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assert.Equal(t, sessionID, session.ID)
+	messages, err = database.GetAllMessages(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, sessionID, messages[0].SessionID)
+	require.Len(t, messages[0].ToolCalls, 1)
+	assert.Equal(t, "Edit", messages[0].ToolCalls[0].Category)
+}
+
 func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name                                   string
@@ -163,6 +212,7 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 				usage, err := database.GetUsageEvents(t.Context(), "vibe:child")
 				require.NoError(t, err)
 				require.Len(t, usage, 1)
+				assert.Equal(t, model, usage[0].Model)
 				token := engine.SourceMtime(t.Context(), "vibe:child")
 				assert.NotZero(t, token)
 				revision, err := database.TranscriptRevision(t.Context(), "vibe:child")

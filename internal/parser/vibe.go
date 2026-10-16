@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -382,7 +383,7 @@ func convertVibeMessage(vibeMsg VibeMessage, ordinal int, defaultModel string) (
 		toolCall := ParsedToolCall{
 			ToolUseID: tc.ID,
 			ToolName:  tc.Function.Name,
-			Category:  NormalizeToolCategory(tc.Function.Name),
+			Category:  vibeToolCategory(tc.Function.Name),
 			InputJSON: vibeToolArguments(tc.Function.Arguments),
 		}
 		toolCalls = append(toolCalls, toolCall)
@@ -394,6 +395,14 @@ func convertVibeMessage(vibeMsg VibeMessage, ordinal int, defaultModel string) (
 	}
 
 	return msg, toolCalls
+}
+
+func vibeToolCategory(name string) string {
+	name = strings.TrimPrefix(name, "file_system.")
+	if name == "search_replace" {
+		return "Edit"
+	}
+	return NormalizeToolCategory(name)
 }
 
 // vibeToolArguments normalizes a tool call's arguments to a raw JSON object.

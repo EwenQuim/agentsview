@@ -340,6 +340,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantResult            string
 		wantChild             string
 		wantInput             string
+		wantCategory          string
 		wantThinking          string
 		wantAssistantThinking string
 		wantMessages          int
@@ -347,6 +348,12 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantStatus            string
 		wantJSON              bool
 	}{
+		{
+			name:         "search_replace effect",
+			before:       `"toolName":"file_system.bash"`,
+			after:        `"toolName":"file_system.search_replace"`,
+			wantCategory: "Edit",
+		},
 		{
 			name:   "effect without timestamp",
 			before: `"createdAt":1790601808027`, after: `"createdAt":0`,
@@ -476,6 +483,9 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 				assert.True(t, call.Timestamp.IsZero())
 			}
 			require.Len(t, call.ToolCalls, 1)
+			if tc.wantCategory != "" {
+				assert.Equal(t, tc.wantCategory, call.ToolCalls[0].Category)
+			}
 			if tc.wantChild != "" {
 				assert.Equal(t, tc.wantChild, call.ToolCalls[0].SubagentSessionID)
 			}
