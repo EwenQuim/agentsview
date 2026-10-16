@@ -164,7 +164,7 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 }
 
 func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
-	for _, name := range []string{"SyncPaths", "watcher plan", "incremental", "remote watcher"} {
+	for _, name := range []string{"SyncPaths", "metadata event", "watcher plan", "incremental", "remote watcher"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			database := dbtest.OpenTestDB(t)
@@ -185,6 +185,7 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 			childAnchor := writeVibeUnifiedChildFixture(t, childDir, "parent", baseTime.Add(time.Hour))
 			var previousToken int64
 			var previousRevision string
+			var previousUsageID int64
 			for i, model := range []string{"", "vibe-test-model-a", "vibe-test-model-b", "vibe-test-model-b"} {
 				generation := strconv.Itoa(i + 1)
 				genDir := filepath.Join(parentDir, "generations", generation)
@@ -216,6 +217,10 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 					assert.ElementsMatch(t, []string{parentAnchor, childAnchor}, paths)
 					_, err = engine.SyncChangedPathPlanContext(t.Context(), plan, nil)
 					require.NoError(t, err)
+				} else if name == "metadata event" {
+					metaPath := filepath.Join(parentDir, "meta.json")
+					require.NoError(t, os.WriteFile(metaPath, []byte(`{"title":"updated parent title"}`), 0o644))
+					engine.SyncPaths([]string{metaPath})
 				} else {
 					engine.SyncPaths([]string{parentAnchor})
 				}
@@ -238,12 +243,14 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 				if i == 3 {
 					assert.Equal(t, previousToken, token)
 					assert.Equal(t, previousRevision, revision)
+					assert.Equal(t, previousUsageID, usage[0].ID)
 				}
 				if i > 0 && i < 3 && prefix == "" {
 					assert.NotEqual(t, previousToken, token, "parent model must change the polling token despite the later child mtime")
 				}
 				previousToken = token
 				previousRevision = revision
+				previousUsageID = usage[0].ID
 				if model != "" {
 					priced, err := database.GetSessionUsage(t.Context(), prefix+"vibe:child", true)
 					require.NoError(t, err)

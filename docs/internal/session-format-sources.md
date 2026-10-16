@@ -4032,7 +4032,9 @@ schemas keep their existing ordering behavior.
   `tokenUsage` and `contextUsage`. Before chunk pooling, the transcript stays
   in `snapshot.history.entries` when manifest `chunks` is null or missing.
   Agentsview reads store v1 minors 1–8, manifest v1, projection v1, and
-  required runtime v3. Missing store, manifest and projection versions default
+  required runtime v3. The producer publishes generation documents and chunks
+  before replacing `CURRENT`; recovery journal appends stay unpublished.
+  Missing store, manifest and projection versions default
   to v1; a missing store minor defaults to 1. Newer versions return an error.
 - **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at

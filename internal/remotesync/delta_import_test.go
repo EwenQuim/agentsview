@@ -815,3 +815,105 @@ func TestImporterHermesSkipsUnchangedSessionFromNewExtractionRoot(t *testing.T) 
 		})
 	}
 }
+
+func TestImporterVibeParentChangesKeepUnchangedChildrenFresh(t *testing.T) {
+	for _, publication := range []string{"CURRENT", "meta.json"} {
+		t.Run(publication, func(t *testing.T) {
+			database := dbtest.OpenTestDB(t)
+			root := t.TempDir()
+			const remoteDir = "/srv/agent/sessions"
+			localDir := remappedRemotePath(root, remoteDir)
+			writeGeneration := func(session, parent, model, generation string) string {
+				dir := filepath.Join(localDir, "unified", session)
+				genDir := filepath.Join(dir, "generations", generation)
+				require.NoError(t, os.MkdirAll(genDir, 0o755))
+				for path, content := range map[string]string{
+					filepath.Join(dir, "CURRENT"):                  `{"generation":"` + generation + `"}`,
+					filepath.Join(genDir, "manifest.json"):         `{}`,
+					filepath.Join(genDir, "runtime-state.json"):    `{"runtime_state_version":3,"identity":{"kind":"subagent","parent_session_id":"` + parent + `"},"session_metadata":{"active_model":"` + model + `"}}`,
+					filepath.Join(genDir, "projection-state.json"): `{"snapshot":{"session":{"tokenUsage":{"inputTokens":10,"outputTokens":5}},"history":{"entries":[{"type":"message","role":"assistant","content":[{"text":"answer"}]}]}}}`,
+				} {
+					require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+				}
+				return filepath.Join(dir, "CURRENT")
+			}
+			parentAnchor := writeGeneration("parent", "", "model-a", "1")
+			childAnchor := writeGeneration("child", "parent", "", "1")
+			targets := TargetSet{Dirs: map[parser.AgentType][]string{parser.AgentVibe: {remoteDir}}}
+			importer := Importer{Host: "remote", DB: database, Root: root, Targets: targets}
+			seed, err := importer.ImportExtracted(t.Context(), targets, root)
+			require.NoError(t, err)
+			require.Equal(t, 2, seed.SessionsSynced)
+			for _, step := range []struct {
+				name, model               string
+				directChild, remove, full bool
+				wantSynced, wantSkipped   int
+			}{
+				{name: "same model", model: "model-a", wantSynced: 1, wantSkipped: 1},
+				{name: "changed model", model: "model-b", wantSynced: 2},
+				{name: "direct child", model: "model-b", directChild: true, wantSynced: 1},
+				{name: "explicit refresh", model: "model-b", full: true, wantSynced: 2},
+				{name: "metadata removal", model: "model-b", remove: true, wantSynced: 2},
+			} {
+				t.Run(step.name, func(t *testing.T) {
+					before, err := database.GetUsageEvents(t.Context(), "remote~vibe:child")
+					require.NoError(t, err)
+					require.Len(t, before, 1)
+					changed := childAnchor
+					if !step.directChild && !step.full {
+						if publication == "CURRENT" && !step.remove {
+							writeGeneration("parent", "", step.model, step.name)
+							changed = parentAnchor
+						} else {
+							// Runtime model changes publish through CURRENT; metadata activity
+							// shares the same parent's dependent-source attribution.
+							if step.model == "model-b" {
+								writeGeneration("parent", "", step.model, "changed")
+							}
+							changed = filepath.Join(filepath.Dir(parentAnchor), "meta.json")
+							require.NoError(t, os.WriteFile(changed, []byte(`{"title":"parent title"}`), 0o600))
+							if step.remove {
+								require.NoError(t, os.Remove(changed))
+							}
+						}
+					}
+					path, err := mirrorRelativeLocalChangePath(root, changed)
+					require.NoError(t, err)
+					reason := FullImportReason("")
+					if step.full {
+						reason = FullImportExplicit
+					}
+					journal := MirrorChangeJournal{
+						Version: mirrorJournalVersion, FullImport: step.full, FullImportReason: reason, ForceFullParseAll: step.full,
+						Entries: []MirrorChangeEntry{{Path: path, InvalidateCache: true, ForceFullParse: true}},
+					}
+					if step.full {
+						journal.Entries = nil
+					}
+					pending, err := importer.PreparePending(t.Context(), DeltaImportRequest{Journal: journal})
+					require.NoError(t, err)
+					if !step.full && !step.remove {
+						require.Len(t, pending.forceScope.Files, 1)
+						wantForced := changed
+						if filepath.Base(changed) == "meta.json" {
+							wantForced = parentAnchor
+						}
+						assert.Equal(t, wantForced, pending.forceScope.Files[0].Path)
+					}
+					stats, err := pending.Execute(t.Context())
+					require.NoError(t, err)
+					assert.Equal(t, step.wantSynced, stats.SessionsSynced)
+					assert.Equal(t, step.wantSkipped, stats.Skipped)
+					assert.Zero(t, stats.FallbackProviders)
+					usage, err := database.GetUsageEvents(t.Context(), "remote~vibe:child")
+					require.NoError(t, err)
+					require.Len(t, usage, 1)
+					assert.Equal(t, step.model, usage[0].Model)
+					if step.name == "same model" {
+						assert.Equal(t, before[0].ID, usage[0].ID, "the unchanged child's usage row must survive the armed parent event")
+					}
+				})
+			}
+		})
+	}
+}

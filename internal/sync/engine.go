@@ -2552,8 +2552,16 @@ func providerChangedPathForceParse(
 	eventKind string,
 	mode parser.ProviderMigrationMode,
 ) bool {
-	if isUnifiedVibeSource(agent, sourcePath) && isUnifiedVibeSource(agent, eventPath) && filepath.Clean(sourcePath) != filepath.Clean(eventPath) && eventKind != "remove" {
-		return false
+	if isUnifiedVibeSource(agent, sourcePath) {
+		if eventKind == "remove" {
+			return true
+		}
+		if vibeDependentSourceForEvent(agent, sourcePath, eventPath) {
+			return false
+		}
+		if filepath.Clean(sourcePath) == filepath.Clean(eventPath) || (filepath.Base(eventPath) == "meta.json" && filepath.Dir(sourcePath) == filepath.Dir(eventPath)) {
+			return true
+		}
 	}
 	if processFileUsesProvider(agent) {
 		// Goose needs no force here despite its one-second timestamps: it
@@ -15470,6 +15478,18 @@ func (e *Engine) providerFingerprintHashMatchesDB(ctx context.Context,
 		lookupPath, string(agent),
 	)
 	return ok && providerFingerprintMatchesStored(agent, lookupPath, fingerprint, fingerprint.Size, fingerprint.MTimeNS, storedHash, required)
+}
+
+// A publication or metadata event owns its session, while expanded children
+// only need a parse when their inherited model fingerprint changes.
+func vibeDependentSourceForEvent(agent parser.AgentType, sourcePath, eventPath string) bool {
+	if !isUnifiedVibeSource(agent, sourcePath) {
+		return false
+	}
+	if filepath.Base(eventPath) == "meta.json" {
+		eventPath = filepath.Join(filepath.Dir(eventPath), "CURRENT")
+	}
+	return isUnifiedVibeSource(agent, eventPath) && filepath.Clean(sourcePath) != filepath.Clean(eventPath)
 }
 
 func isUnifiedVibeSource(agent parser.AgentType, path string) bool {

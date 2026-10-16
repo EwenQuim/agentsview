@@ -523,7 +523,12 @@ func (plan *ChangedPathPlan) PruneScope(
 		if _, armed := armedPhysicalPaths[filepath.Clean(path)]; !armed {
 			continue
 		}
-		files = append(files, attribution.files...)
+		for _, file := range attribution.files {
+			if providerChangedPathEventKind(path) != "remove" && vibeDependentSourceForEvent(file.Agent, file.Path, path) {
+				continue
+			}
+			files = append(files, file)
+		}
 		providers = append(providers, attribution.fallbackProviders...)
 	}
 	files = sortAndDedupeChangedPathFiles(files)

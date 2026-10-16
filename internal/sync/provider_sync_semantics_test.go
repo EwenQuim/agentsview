@@ -873,3 +873,66 @@ func TestVibeUnifiedHashFreshness(t *testing.T) {
 		})
 	}
 }
+
+func TestVibeChangedPathForcesOnlyChangedSession(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "unified", "parent")
+	child := filepath.Join(filepath.Dir(parent), "child", "CURRENT")
+	for _, tc := range []struct {
+		source, event, kind string
+		want                bool
+	}{
+		{child, filepath.Join(parent, "CURRENT"), "write", false},
+		{child, filepath.Join(parent, "meta.json"), "write", false},
+		{child, child, "write", true},
+		{child, filepath.Join(filepath.Dir(child), "meta.json"), "write", true},
+		{child, filepath.Join(parent, "meta.json"), "remove", true},
+	} {
+		assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
+	}
+}
+
+func TestVibeInternalEventsDoNotWidenChangedPathPlan(t *testing.T) {
+	root := t.TempDir()
+	anchor := filepath.Join(root, "unified", "session", "CURRENT")
+	require.NoError(t, os.MkdirAll(filepath.Dir(anchor), 0o755))
+	require.NoError(t, os.WriteFile(anchor, []byte(`{"generation":"0000000000000001"}`), 0o600))
+	engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}})
+	t.Cleanup(engine.Close)
+	for _, tc := range []struct {
+		path     string
+		fallback bool
+	}{
+		{"unified/session/generations/0000000000000001/manifest.json", false},
+		{"unified/session/generations/0000000000000001/runtime-state.json", false},
+		{"unified/session/generations/0000000000000001/projection-state.json", false},
+		{"unified/session/generations/0000000000000001/checkpoint.json", false},
+		{"unified/session/generations/.staging-0000000000000001-0123456789abcdef/runtime-state.json", false},
+		{"unified/session/chunks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", false},
+		{"unified/session/journal/0000000000000001.jsonl", false},
+		{"unified/session/generations/0000000000000001/unknown.json", true},
+		{"unified/session/chunks/unknown.txt", true},
+		{"unified/session/chunks/unknown.json", true},
+		{"unified/session/journal/unknown.jsonl", true},
+		{"unified/session/unknown.json", true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			path := filepath.Join(root, filepath.FromSlash(tc.path))
+			// Remote removals classify with the same bounded path evidence as writes.
+			for _, exists := range []bool{true, false} {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o600))
+				if !exists {
+					require.NoError(t, os.Remove(path))
+				}
+				plan, err := engine.PlanChangedPathsContext(t.Context(), []string{path})
+				require.NoError(t, err)
+				assert.Empty(t, plan.Files)
+				if tc.fallback {
+					assert.Equal(t, []parser.AgentType{parser.AgentVibe}, plan.FallbackProviders)
+				} else {
+					assert.Empty(t, plan.FallbackProviders)
+				}
+			}
+		})
+	}
+}

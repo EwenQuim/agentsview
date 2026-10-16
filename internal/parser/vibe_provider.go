@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -14,11 +15,11 @@ import (
 // folding in meta.json and a fallback-ID exclusion when meta.json later supplies
 // a different session_id.
 func newVibeProviderFactory(def AgentDef) ProviderFactory {
-	return NewSingleFileProviderFactory(
+	return NewSourceSetFactory(
 		def,
 		vibeProviderCapabilities(),
-		func(cfg ProviderConfig) singleFileSourceSet {
-			return NewSingleFileSourceSet(
+		func(cfg ProviderConfig) SourceSet {
+			return vibeSourceSet{NewSingleFileSourceSet(
 				AgentVibe,
 				cfg.Roots,
 				WithStreamingFileDiscovery(vibeDiscoverEach),
@@ -27,9 +28,34 @@ func newVibeProviderFactory(def AgentDef) ProviderFactory {
 				WithFileLookup(vibeFindFile),
 				WithFileFingerprint(vibeFingerprintSource),
 				WithFileParse(vibeParseFile),
-			)
+			)}
 		},
 	)
+}
+
+type vibeSourceSet struct{ singleFileSourceSet }
+
+var vibeUnifiedInternalPath = regexp.MustCompile(`^unified/[^/]+/(chunks/[0-9a-f]{64}\.json|journal/[0-9]{16}\.jsonl|generations/([0-9]{16}|\.staging-[0-9]{16}-[0-9a-f]{16})/(manifest|runtime-state|projection-state|checkpoint)\.json)$`)
+
+func (s vibeSourceSet) ChangedPathRelevance(ctx context.Context, req ChangedPathRequest) (ChangedPathRelevance, error) {
+	if err := ctx.Err(); err != nil {
+		return ChangedPathUnclassified, err
+	}
+	for _, root := range s.roots {
+		rel, ok := vibeRelPath(root, req.Path)
+		if !ok {
+			continue
+		}
+		if _, ok := vibeClassifyPath(root, req.Path, true); ok {
+			return ChangedPathDataBearing, nil
+		}
+		// The producer writes immutable generation documents and chunks before
+		// publishing CURRENT. Recovery journal appends do not publish transcripts.
+		if vibeUnifiedInternalPath.MatchString(filepath.ToSlash(rel)) {
+			return ChangedPathNonData, nil
+		}
+	}
+	return ChangedPathUnclassified, nil
 }
 
 func vibeDiscoverEach(
@@ -313,6 +339,7 @@ func vibeProviderCapabilities() Capabilities {
 			StreamingDiscovery:   CapabilitySupported,
 			WatchSources:         CapabilitySupported,
 			ClassifyChangedPath:  CapabilitySupported,
+			ChangedPathRelevance: CapabilitySupported,
 			FindSource:           CapabilitySupported,
 			CompositeFingerprint: CapabilitySupported,
 			MultiSessionSource:   CapabilityNotApplicable,
