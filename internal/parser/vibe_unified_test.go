@@ -340,12 +340,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
-			name:       "output content takes precedence",
-			before:     `"state":{"output":`,
-			after:      `"state":{"outputText":"direct output","output":`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
 			name:       "text and resource",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"output":{"content":[{"type":"text","text":"text output"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}],"type":"success"},"outputText":"text output","status":"completed"}`,

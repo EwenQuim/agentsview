@@ -177,8 +177,8 @@ func (e *Engine) planOneChangedPath(
 				providerUnproven = true
 				continue
 			}
-			if agent == parser.AgentOmnigent {
-				sources, sourceErr = e.expandOmnigentInheritedMetadataSources(
+			if agent == parser.AgentOmnigent || agent == parser.AgentVibe {
+				sources, sourceErr = e.expandInheritedMetadataSources(
 					ctx, provider, sources,
 				)
 				if errors.Is(sourceErr, context.Canceled) ||

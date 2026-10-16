@@ -129,6 +129,14 @@ func vibeIsUnifiedAnchor(path string) bool {
 		filepath.Base(filepath.Dir(filepath.Dir(path))) == "unified"
 }
 
+// VibeUnifiedSessionID returns the archive session ID for a unified anchor.
+func VibeUnifiedSessionID(path string) (string, bool) {
+	if !vibeIsUnifiedAnchor(path) {
+		return "", false
+	}
+	return "vibe:" + filepath.Base(filepath.Dir(path)), true
+}
+
 // vibeUnifiedSessionDirFromRel maps CURRENT and meta.json to their session directory.
 func vibeUnifiedSessionDirFromRel(rel, root string) (string, bool) {
 	parts := strings.Split(rel, string(filepath.Separator))

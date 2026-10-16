@@ -4093,6 +4093,9 @@ schemas keep their existing ordering behavior.
   parent's recorded model, empty while unavailable. Reverified 2026-10-07
   with `TestVibeUnifiedProviderParseSubagentSession`: parent model changes
   and recovery change the child's hash without changing its size or mtime.
+  Parent-only events refresh archived descendants through the indexed parent
+  lookup. Unified session polling includes the fingerprint hash, so inherited
+  model changes are visible even when child files have a later modification time.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

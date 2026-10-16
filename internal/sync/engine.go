@@ -2300,8 +2300,8 @@ func (e *Engine) classifyProviderChangedPath(
 					continue
 				}
 			}
-			if def.Type == parser.AgentOmnigent {
-				sources, err = e.expandOmnigentInheritedMetadataSources(
+			if def.Type == parser.AgentOmnigent || def.Type == parser.AgentVibe {
+				sources, err = e.expandInheritedMetadataSources(
 					ctx, provider, sources,
 				)
 				if err != nil {
@@ -2365,16 +2365,15 @@ func (e *Engine) classifyProviderChangedPath(
 	return files, classificationErr
 }
 
-// expandOmnigentInheritedMetadataSources adds the still-archived descendant
-// (subagent) sources of each changed omnigent member so their inherited cwd
-// and branch metadata refresh alongside the changed root.
-func (e *Engine) expandOmnigentInheritedMetadataSources(
+// expandInheritedMetadataSources adds archived descendants so inherited
+// metadata refreshes alongside a changed parent.
+func (e *Engine) expandInheritedMetadataSources(
 	ctx context.Context,
 	provider parser.Provider,
 	sources []parser.SourceRef,
 ) ([]parser.SourceRef, error) {
 	reconciler, exact := provider.(parser.ReconciliationSourceResolver)
-	if !exact || len(sources) == 0 {
+	if len(sources) == 0 || (!exact && provider.Definition().Type != parser.AgentVibe) {
 		return sources, nil
 	}
 	agent := provider.Definition().Type
@@ -2388,6 +2387,9 @@ func (e *Engine) expandOmnigentInheritedMetadataSources(
 			seenSources[sourcePath] = struct{}{}
 		}
 		rawID, found := parser.OmnigentMemberSessionID(source)
+		if agent == parser.AgentVibe {
+			rawID, found = parser.VibeUnifiedSessionID(sourcePath)
+		}
 		if !found {
 			continue
 		}
@@ -2406,7 +2408,7 @@ func (e *Engine) expandOmnigentInheritedMetadataSources(
 	}
 	storedMachines, err := e.db.ListSessionMachinesByID(ctx, parentIDs)
 	if err != nil {
-		return nil, fmt.Errorf("list omnigent parent session machines: %w", err)
+		return nil, fmt.Errorf("list %s parent session machines: %w", agent, err)
 	}
 	// A descendant is stored under the machine its parent was admitted under,
 	// which is not necessarily the local one, so group the lookup by each
@@ -2438,16 +2440,22 @@ func (e *Engine) expandOmnigentInheritedMetadataSources(
 		if e.storedPathResolver != nil {
 			resolved, ok := e.storedPathResolver(storedPath)
 			if !ok {
-				return nil, errors.New(
-					"resolve omnigent stored descendant source path",
-				)
+				return nil, fmt.Errorf("resolve %s stored descendant source path", agent)
 			}
 			path = resolved
 		}
 		if _, exists := seenSources[path]; exists {
 			continue
 		}
-		source, found, err := reconciler.SourceForReconciliation(ctx, path, "")
+		var source parser.SourceRef
+		var found bool
+		if agent == parser.AgentVibe {
+			source, found, err = provider.FindSource(ctx, parser.FindSourceRequest{
+				StoredFilePath: path, RequireFreshSource: true,
+			})
+		} else {
+			source, found, err = reconciler.SourceForReconciliation(ctx, path, "")
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -20648,10 +20656,12 @@ func (e *Engine) providerSessionSourceMtime(
 			return 0
 		}
 	}
-	if def.Type == parser.AgentCursorIDE && fingerprint.Hash != "" {
+	_, unifiedVibe := parser.VibeUnifiedSessionID(providerDiscoveredPath(source))
+	if (def.Type == parser.AgentCursorIDE || (def.Type == parser.AgentVibe && unifiedVibe)) && fingerprint.Hash != "" {
 		// SourceMtime is an equality-only change token (see the Codebuff
 		// branch): folding the member content digest in lets the watcher's
-		// polling fallback see an edit that leaves lastUpdatedAt untouched.
+		// polling fallback see an edit that leaves lastUpdatedAt untouched,
+		// or an inherited Vibe model change below the child's later mtime.
 		h := fnv.New64a()
 		_, _ = fmt.Fprintf(h, "%d|%s", fingerprint.MTimeNS, fingerprint.Hash)
 		return int64(h.Sum64())
@@ -20774,9 +20784,11 @@ func (e *Engine) SourceMtime(ctx context.Context, sessionID string) int64 {
 	if path == "" {
 		return 0
 	}
+	_, unifiedVibe := parser.VibeUnifiedSessionID(path)
 	if e.isProviderAuthoritative(def.Type) &&
 		(providerSourcePathNeedsFingerprint(path) ||
-			providerSourceMtimeNeedsFingerprint(def.Type)) {
+			providerSourceMtimeNeedsFingerprint(def.Type) ||
+			(def.Type == parser.AgentVibe && unifiedVibe)) {
 		if mtime := e.providerSessionSourceMtime(
 			ctx, def, sessionID, rawSessionID, path,
 		); mtime != 0 {

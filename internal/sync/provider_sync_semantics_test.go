@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -631,7 +633,7 @@ func TestOmnigentDependentSourceExpansionPreservesEngineIDPrefixing(
 		idPrefix: "remote~",
 	}
 
-	expanded, err := engine.expandOmnigentInheritedMetadataSources(
+	expanded, err := engine.expandInheritedMetadataSources(
 		t.Context(), provider, []parser.SourceRef{rootSource},
 	)
 
@@ -640,10 +642,63 @@ func TestOmnigentDependentSourceExpansionPreservesEngineIDPrefixing(
 
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err = engine.expandOmnigentInheritedMetadataSources(
+	_, err = engine.expandInheritedMetadataSources(
 		canceled, provider, []parser.SourceRef{rootSource},
 	)
 	require.ErrorContains(t, err, "list omnigent parent session machines")
+}
+
+func TestVibeDependentSourceExpansionStaysBounded(t *testing.T) {
+	for _, unrelated := range []int{1, 200} {
+		t.Run(strconv.Itoa(unrelated), func(t *testing.T) {
+			database := openTestDB(t)
+			root := t.TempDir()
+			parentID := "remote~vibe:parent"
+			var resolved []string
+			engine := NewEngine(t.Context(), database, EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
+				Machine:   "local", IDPrefix: "remote~",
+				StoredPathResolver: func(path string) (string, bool) {
+					resolved = append(resolved, path)
+					return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(path, "/remote/"))), true
+				},
+			})
+			t.Cleanup(engine.Close)
+			for _, name := range []string{"parent", "child", "missing", "trashed", "foreign"} {
+				path := filepath.Join(root, "unified", name, "CURRENT")
+				if name != "missing" {
+					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+					require.NoError(t, os.WriteFile(path, []byte(`{"generation":"1"}`), 0o644))
+				}
+				storedPath := "/remote/unified/" + name + "/CURRENT"
+				session := db.Session{ID: "remote~vibe:" + name, Agent: "vibe", FilePath: &storedPath}
+				if name != "parent" {
+					session.ParentSessionID = &parentID
+				}
+				if name == "foreign" {
+					session.Machine = "other"
+				}
+				require.NoError(t, database.UpsertSession(t.Context(), session))
+			}
+			require.NoError(t, database.SoftDeleteSession(t.Context(), "remote~vibe:trashed"))
+			for i := range unrelated {
+				path := "/remote/unified/unrelated-" + strconv.Itoa(i) + "/CURRENT"
+				require.NoError(t, database.UpsertSession(t.Context(), db.Session{
+					ID: "remote~vibe:unrelated-" + strconv.Itoa(i), Agent: "vibe", FilePath: &path,
+				}))
+			}
+			provider := engine.sources().providerFactories[parser.AgentVibe].NewProvider(parser.ProviderConfig{Roots: []string{root}})
+			parentPath := filepath.Join(root, "unified", "parent", "CURRENT")
+			parent, found, err := provider.FindSource(t.Context(), parser.FindSourceRequest{StoredFilePath: parentPath})
+			require.NoError(t, err)
+			require.True(t, found)
+			expanded, err := engine.expandInheritedMetadataSources(t.Context(), provider, []parser.SourceRef{parent})
+			require.NoError(t, err)
+			require.Len(t, expanded, 2)
+			assert.Equal(t, filepath.Join(root, "unified", "child", "CURRENT"), providerDiscoveredPath(expanded[1]))
+			assert.ElementsMatch(t, []string{"/remote/unified/child/CURRENT", "/remote/unified/missing/CURRENT"}, resolved)
+		})
+	}
 }
 
 // TestBaselineFailureDoesNotPromoteSkipCache pins the omnigent-only cache

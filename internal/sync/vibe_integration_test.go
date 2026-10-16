@@ -156,6 +156,88 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	assert.Zero(t, stats.Synced)
 }
 
+func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
+	for _, watcher := range []bool{false, true} {
+		name := "SyncPaths"
+		if watcher {
+			name = "watcher plan"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			database := dbtest.OpenTestDB(t)
+			engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
+				Machine:   "local",
+			})
+			t.Cleanup(engine.Close)
+			baseTime := time.Unix(1_791_000_000, 0)
+			parentDir := filepath.Join(root, "unified", "parent")
+			parentAnchor := filepath.Join(parentDir, "CURRENT")
+			childDir := filepath.Join(root, "unified", "child")
+			childAnchor := filepath.Join(childDir, "CURRENT")
+			childGeneration := filepath.Join(childDir, "generations", "1")
+			require.NoError(t, os.MkdirAll(childGeneration, 0o755))
+			for path, content := range map[string]string{
+				childAnchor: `{"generation":"1"}`,
+				filepath.Join(childGeneration, "manifest.json"):         `{}`,
+				filepath.Join(childGeneration, "runtime-state.json"):    `{"identity":{"kind":"subagent","parent_session_id":"parent"}}`,
+				filepath.Join(childGeneration, "projection-state.json"): `{"snapshot":{"session":{"tokenUsage":{"inputTokens":10,"outputTokens":5}},"history":{"entries":[{"type":"message","role":"assistant","content":[{"text":"child answer"}]}]}}}`,
+			} {
+				require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+				later := baseTime.Add(time.Hour)
+				require.NoError(t, os.Chtimes(path, later, later))
+			}
+			var previousToken int64
+			for i, model := range []string{"", "mistral-medium-3.5", "mistral-small-latest"} {
+				generation := strconv.Itoa(i + 1)
+				genDir := filepath.Join(parentDir, "generations", generation)
+				require.NoError(t, os.MkdirAll(genDir, 0o755))
+				for path, content := range map[string]string{
+					parentAnchor:                                   `{"generation":"` + generation + `"}`,
+					filepath.Join(genDir, "manifest.json"):         `{}`,
+					filepath.Join(genDir, "runtime-state.json"):    `{"session_metadata":{"active_model":"` + model + `"}}`,
+					filepath.Join(genDir, "projection-state.json"): `{"snapshot":{"history":{"entries":[{"type":"message","role":"user","content":[{"text":"parent question"}]}]}}}`,
+				} {
+					require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+					mtime := baseTime.Add(time.Duration(i) * time.Second)
+					require.NoError(t, os.Chtimes(path, mtime, mtime))
+				}
+				if i == 0 {
+					engine.SyncPaths([]string{parentAnchor, childAnchor})
+				} else if watcher {
+					plan, err := engine.PlanChangedPathsContext(t.Context(), []string{parentAnchor})
+					require.NoError(t, err)
+					paths := make([]string, 0, len(plan.Files))
+					for _, file := range plan.Files {
+						paths = append(paths, file.Path)
+					}
+					assert.ElementsMatch(t, []string{parentAnchor, childAnchor}, paths)
+					_, err = engine.SyncChangedPathPlanContext(t.Context(), plan, nil)
+					require.NoError(t, err)
+				} else {
+					engine.SyncPaths([]string{parentAnchor})
+				}
+				messages, err := database.GetMessages(t.Context(), "vibe:child", 0, 10, true)
+				require.NoError(t, err)
+				require.Len(t, messages, 1)
+				assert.Equal(t, model, messages[0].Model)
+				usage, err := database.GetUsageEvents(t.Context(), "vibe:child")
+				require.NoError(t, err)
+				require.Len(t, usage, 1)
+				assert.Equal(t, model, usage[0].Model)
+				assert.Equal(t, 10, usage[0].InputTokens)
+				assert.Equal(t, 5, usage[0].OutputTokens)
+				token := engine.SourceMtime(t.Context(), "vibe:child")
+				assert.NotZero(t, token)
+				if i > 0 {
+					assert.NotEqual(t, previousToken, token, "parent model must change the polling token despite the later child mtime")
+				}
+				previousToken = token
+			}
+		})
+	}
+}
+
 func TestSourceMtimeVibeIncludesMetaMtime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
