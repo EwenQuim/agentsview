@@ -60,6 +60,52 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 	return sessionDir
 }
 
+func TestVibeUnifiedParseSourceSize(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+	parentDir := writeVibeUnifiedSession(t, root, "parent")
+	gen := "0000000000000001"
+	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"},"session_metadata":{}}`)
+	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "manifest.json"), `{"projection_state":{"chunks":["cafe0001","cafe0002"]}}`)
+	answer := strings.Repeat("large answer ", 10000)
+	writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0002.json"), `[{"type":"message","role":"assistant","content":[{"text":"`+answer+`"}]}]`)
+	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+	require.True(t, ok)
+	source, found, err := provider.FindSource(t.Context(), FindSourceRequest{StoredFilePath: filepath.Join(sessionDir, "CURRENT")})
+	require.NoError(t, err)
+	require.True(t, found)
+	fingerprint, err := provider.Fingerprint(t.Context(), source)
+	require.NoError(t, err)
+	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
+	require.NoError(t, err)
+	require.Len(t, outcome.Results, 1)
+	messages := outcome.Results[0].Result.Messages
+	require.NotEmpty(t, messages)
+	assert.Equal(t, answer, messages[len(messages)-1].Content)
+	assert.Equal(t, "mistral-medium-3.5", messages[len(messages)-1].Model)
+
+	var want int64
+	for _, path := range []string{
+		filepath.Join(sessionDir, "CURRENT"), filepath.Join(sessionDir, "meta.json"),
+		filepath.Join(sessionDir, "generations", gen, "manifest.json"),
+		filepath.Join(sessionDir, "generations", gen, "projection-state.json"),
+		filepath.Join(sessionDir, "generations", gen, "runtime-state.json"),
+		filepath.Join(sessionDir, "chunks", "cafe0001.json"), filepath.Join(sessionDir, "chunks", "cafe0002.json"),
+		filepath.Join(parentDir, "CURRENT"), filepath.Join(parentDir, "generations", gen, "runtime-state.json"),
+	} {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		want += info.Size()
+	}
+	require.Implements(t, (*ParseSourceSizer)(nil), provider)
+	size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), source)
+	require.NoError(t, err)
+	assert.Equal(t, want, size)
+	after, err := provider.Fingerprint(t.Context(), source)
+	require.NoError(t, err)
+	assert.Equal(t, fingerprint, after)
+}
+
 func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
 	for _, tc := range []struct {
 		name               string

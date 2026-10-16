@@ -122,6 +122,35 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	assert.Zero(t, stats.Synced)
 }
 
+func TestSyncAllSinceVibeMissingParentRefreshesInheritedModel(t *testing.T) {
+	root := t.TempDir()
+	database := dbtest.OpenTestDB(t)
+	config := sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, Machine: "local"}
+	baseTime := time.Unix(1_791_000_000, 0)
+	parent := dbtest.WriteVibeUnifiedGeneration(t, filepath.Join(root, "unified", "parent"), "1", "", "model-a", baseTime.Add(time.Second))
+	child := dbtest.WriteVibeUnifiedGeneration(t, filepath.Join(root, "unified", "child"), "1", "parent", "", baseTime)
+	engine := sync.NewEngine(t.Context(), database, config)
+	engine.SyncPaths([]string{parent, child})
+	engine.Close()
+	usage, err := database.GetUsageEvents(t.Context(), "vibe:child")
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	require.Equal(t, "model-a", usage[0].Model)
+
+	// No watcher observes the deletion while the engine is stopped.
+	require.NoError(t, os.Remove(parent))
+	engine = sync.NewEngine(t.Context(), database, config)
+	t.Cleanup(engine.Close)
+	stats := engine.SyncAllSince(t.Context(), baseTime.Add(2*time.Second), nil)
+	assert.Equal(t, 1, stats.Synced)
+	usage, err = database.GetUsageEvents(t.Context(), "vibe:child")
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	assert.Empty(t, usage[0].Model)
+	stats = engine.SyncAllSince(t.Context(), baseTime.Add(2*time.Second), nil)
+	assert.Zero(t, stats.Synced)
+}
+
 func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 	for _, name := range []string{"SyncPaths", "metadata event", "metadata removal", "watcher plan"} {
 		t.Run(name, func(t *testing.T) {

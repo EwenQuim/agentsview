@@ -550,7 +550,7 @@ func vibeUnifiedParentModel(sessionDir, parentID string) (string, int64, error) 
 	}
 	info, err := os.Stat(filepath.Join(parentDir, "CURRENT"))
 	if err != nil {
-		return parentMeta.SessionMetadata.ActiveModel, 0, nil
+		return "", 0, fmt.Errorf("stat Vibe unified parent CURRENT: %w", err)
 	}
 	return parentMeta.SessionMetadata.ActiveModel, info.ModTime().UnixNano(), nil
 }

@@ -2,6 +2,7 @@ package parser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 // folding in meta.json and a fallback-ID exclusion when meta.json later supplies
 // a different session_id.
 func newVibeProviderFactory(def AgentDef) ProviderFactory {
-	return NewSourceSetFactory(
+	return vibeProviderFactory{NewSourceSetFactory(
 		def,
 		vibeProviderCapabilities(),
 		func(cfg ProviderConfig) SourceSet {
@@ -30,7 +31,70 @@ func newVibeProviderFactory(def AgentDef) ProviderFactory {
 				WithFileParse(vibeParseFile),
 			)}
 		},
-	)
+	)}
+}
+
+type vibeProviderFactory struct{ ProviderFactory }
+
+func (f vibeProviderFactory) NewProvider(cfg ProviderConfig) Provider {
+	return &vibeProvider{f.ProviderFactory.NewProvider(cfg).(*SourceSetProvider)}
+}
+
+type vibeProvider struct{ *SourceSetProvider }
+
+func (p *vibeProvider) ParseSourceSize(ctx context.Context, source SourceRef) (int64, error) {
+	src, ok := p.sources.(vibeSourceSet).sourceFromRef(source)
+	if !ok {
+		return 0, errors.New("vibe source path unavailable")
+	}
+	sessionDir := filepath.Dir(src.Path)
+	paths := []string{src.Path, filepath.Join(sessionDir, "meta.json")}
+	if _, unified := VibeUnifiedSessionID(src.Path); unified {
+		genDir, err := vibeUnifiedGenerationDir(sessionDir)
+		if err != nil {
+			return 0, err
+		}
+		var manifest vibeUnifiedManifest
+		if err := readVibeUnifiedDoc(genDir, "manifest.json", &manifest); err != nil {
+			return 0, err
+		}
+		var runtimeMeta vibeUnifiedRuntimeMetadata
+		if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
+			return 0, err
+		}
+		paths = append(paths, filepath.Join(genDir, "manifest.json"), filepath.Join(genDir, "projection-state.json"), filepath.Join(genDir, "runtime-state.json"))
+		for _, chunk := range manifest.ProjectionState.Chunks {
+			if !isSafeSinglePathComponent(chunk) {
+				return 0, fmt.Errorf("invalid Vibe unified chunk hash %q", chunk)
+			}
+			paths = append(paths, filepath.Join(sessionDir, "chunks", chunk+".json"))
+		}
+		if parentID := runtimeMeta.Identity.ParentSessionID; runtimeMeta.SessionMetadata.ActiveModel == "" && isSafeSinglePathComponent(parentID) {
+			parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
+			parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
+			if errors.Is(err, errVibeUnsupportedVersion) {
+				return 0, err
+			}
+			if err == nil {
+				paths = append(paths, filepath.Join(parentDir, "CURRENT"), filepath.Join(parentGenDir, "runtime-state.json"))
+			}
+		}
+	}
+	var size int64
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) && path != src.Path {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		size += info.Size()
+	}
+	return size, nil
 }
 
 type vibeSourceSet struct{ singleFileSourceSet }

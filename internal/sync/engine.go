@@ -9011,6 +9011,19 @@ func (e *Engine) filterFilesByMtime(
 			out = append(out, f)
 			continue
 		}
+		if isUnifiedVibeSource(f.Agent, f.Path) {
+			// Removing a parent can change the inherited model while the
+			// child's effective mtime falls back below the cutoff.
+			fingerprint, ok, err := e.providerSourceFingerprint(ctx, f)
+			lookupPath := f.Path
+			if e.pathRewriter != nil {
+				lookupPath = e.pathRewriter(lookupPath)
+			}
+			if err != nil || (ok && !e.providerFingerprintHashMatchesDB(ctx, f.Agent, lookupPath, fingerprint, true)) {
+				out = append(out, f)
+				continue
+			}
+		}
 		// The bypass probes below cost a DB read per file, so they run only
 		// for files the cutoff would otherwise drop.
 		var sourceCwd sourceCwdDecision
@@ -9349,16 +9362,23 @@ func (e *Engine) providerFingerprint(ctx context.Context, provider parser.Provid
 func (e *Engine) providerSourceMtime(
 	ctx context.Context, file parser.DiscoveredFile,
 ) (int64, bool, error) {
+	fingerprint, ok, err := e.providerSourceFingerprint(ctx, file)
+	return fingerprint.MTimeNS, ok && fingerprint.MTimeNS != 0, err
+}
+
+func (e *Engine) providerSourceFingerprint(
+	ctx context.Context, file parser.DiscoveredFile,
+) (parser.SourceFingerprint, bool, error) {
 	if file.ProviderSource == nil {
-		return 0, false, nil
+		return parser.SourceFingerprint{}, false, nil
 	}
 	factory, ok := e.sources().providerFactories[file.Agent]
 	if !ok || factory == nil {
-		return 0, false, nil
+		return parser.SourceFingerprint{}, false, nil
 	}
 	source := *file.ProviderSource
 	if source.Provider != "" && source.Provider != file.Agent {
-		return 0, false, fmt.Errorf(
+		return parser.SourceFingerprint{}, false, fmt.Errorf(
 			"provider source mismatch for %s: %s",
 			file.Agent,
 			source.Provider,
@@ -9371,12 +9391,9 @@ func (e *Engine) providerSourceMtime(
 	})
 	fingerprint, err := e.providerFingerprint(ctx, provider, source)
 	if err != nil {
-		return 0, false, err
+		return parser.SourceFingerprint{}, false, err
 	}
-	if fingerprint.MTimeNS == 0 {
-		return 0, false, nil
-	}
-	return fingerprint.MTimeNS, true, nil
+	return fingerprint, true, nil
 }
 
 func discoveredFileMtime(ctx context.Context,
