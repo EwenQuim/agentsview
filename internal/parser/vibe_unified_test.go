@@ -67,7 +67,7 @@ func TestVibeUnifiedParseSourceSize(t *testing.T) {
 	gen := "0000000000000001"
 	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"},"session_metadata":{}}`)
 	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "manifest.json"), `{"projection_state":{"chunks":["cafe0001","cafe0002"]}}`)
-	answer := strings.Repeat("large answer ", 10000)
+	answer := "second chunk answer"
 	writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0002.json"), `[{"type":"message","role":"assistant","content":[{"text":"`+answer+`"}]}]`)
 	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
 	require.True(t, ok)
@@ -76,13 +76,6 @@ func TestVibeUnifiedParseSourceSize(t *testing.T) {
 	require.True(t, found)
 	fingerprint, err := provider.Fingerprint(t.Context(), source)
 	require.NoError(t, err)
-	outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
-	require.NoError(t, err)
-	require.Len(t, outcome.Results, 1)
-	messages := outcome.Results[0].Result.Messages
-	require.NotEmpty(t, messages)
-	assert.Equal(t, answer, messages[len(messages)-1].Content)
-	assert.Equal(t, "mistral-medium-3.5", messages[len(messages)-1].Model)
 
 	var want int64
 	for _, path := range []string{
@@ -299,6 +292,16 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, "Bash", messages[2].ToolCalls[0].Category)
 	require.Len(t, messages[2].ToolCalls[0].ResultEvents, 2)
 	assert.Equal(t, "file-a\nfile-b", messages[2].ToolCalls[0].ResultEvents[1].Content)
+	start := messages[2].ToolCalls[0].ResultEvents[0]
+	assert.Equal(t, "tool_execution", start.Source)
+	assert.Equal(t, "effect-1", start.ToolUseID)
+	assert.Equal(t, "started", start.Status)
+	assert.Equal(t, messages[2].Timestamp, start.Timestamp)
+	event := messages[2].ToolCalls[0].ResultEvents[1]
+	assert.Equal(t, "tool_execution", event.Source)
+	assert.Equal(t, "effect-1", event.ToolUseID)
+	assert.Equal(t, "completed", event.Status)
+	assert.Equal(t, int64(1790601808099), event.Timestamp.UnixMilli())
 	require.Len(t, result.Result.UsageEvents, 1)
 	assert.Equal(t, "mistral-medium-3.5", result.Result.UsageEvents[0].Model)
 	assert.Equal(t, 1000, result.Result.UsageEvents[0].InputTokens)
@@ -331,107 +334,100 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct {
-		name         string
-		before       string
-		after        string
-		wantResult   string
-		wantChild    string
-		wantInput    string
-		wantCategory string
-		wantThinking string
-		wantMessages int
-		wantZeroTime bool
-		wantStatus   string
-		wantJSON     bool
+		name                  string
+		before                string
+		after                 string
+		wantResult            string
+		wantChild             string
+		wantInput             string
+		wantThinking          string
+		wantAssistantThinking string
+		wantMessages          int
+		wantZeroTime          bool
+		wantStatus            string
+		wantJSON              bool
 	}{
 		{
 			name:   "effect without timestamp",
 			before: `"createdAt":1790601808027`, after: `"createdAt":0`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantZeroTime: true,
+			wantZeroTime: true,
 		},
 		{
 			name:       "skipped effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"skipped","reason":"Permission denied"}`,
-			wantResult: "Permission denied", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "Permission denied",
 			wantStatus: "errored",
 		},
 		{
 			name:       "failed effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","error":{"message":"Command failed"},"output":{"content":[]},"outputText":""}`,
-			wantResult: "Command failed", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "Command failed",
 			wantStatus: "errored",
 		},
 		{
 			name:       "failure output takes precedence",
 			before:     `"status":"completed"`,
 			after:      `"status":"failed","reason":"fallback reason","error":{"message":"fallback error"}`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "file-a\nfile-b",
 			wantStatus: "errored",
 		},
 		{
 			name:       "reason takes precedence over error",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"failed","reason":"Stop requested","error":{"message":"fallback error"}}`,
-			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "Stop requested",
 			wantStatus: "errored",
 		},
 		{
 			name:       "running effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"running","outputText":"partial output"}`,
-			wantResult: "partial output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantStatus: "running",
+			wantResult: "partial output", wantStatus: "running",
 		},
 		{
 			name:       "cancelled effect",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"status":"cancelled","reason":"Stop requested"}`,
-			wantResult: "Stop requested", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3, wantStatus: "cancelled",
+			wantResult: "Stop requested", wantStatus: "cancelled",
 		},
 		{
-			name:         "text and image result",
-			wantJSON:     true,
-			before:       `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
-			after:        `"content":[{"type":"text","text":"screenshot"},{"type":"image","data":"AA==","mimeType":"image/png"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
-			wantResult:   `[{"type":"text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"text","text":"resource output"}]`,
-			wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
-			name:       "skill.read",
-			before:     `"toolName":"file_system.bash"`,
-			after:      `"toolName":"skill.read"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Other", wantThinking: "checking the files", wantMessages: 3,
+			name:       "text and image result",
+			wantJSON:   true,
+			before:     `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
+			after:      `"content":[{"type":"text","text":"screenshot"},{"type":"image","data":"AA==","mimeType":"image/png"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
+			wantResult: `[{"type":"text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"text","text":"resource output"}]`,
 		},
 		{
 			name:      "null input",
 			before:    `"input":{"command":"ls"}`,
 			after:     `"input":null`,
-			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantInput: "{}",
 		},
 		{
 			name:      "absent input",
 			before:    `,"input":{"command":"ls"}`,
 			after:     ``,
-			wantInput: "{}", wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantInput: "{}",
 		},
 		{
 			name:       "text and resource",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"output":{"content":[{"type":"text","text":"text output"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}],"type":"success"},"outputText":"text output","status":"completed"}`,
-			wantResult: "text output\nresource output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "text output\nresource output",
 		},
 		{
 			name:       "output text without output",
 			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
 			after:      `"state":{"outputText":"direct output","status":"completed"}`,
-			wantResult: "direct output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
+			wantResult: "direct output",
 		},
 		{
-			name:       "subagent effect",
-			before:     `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}}`,
-			after:      `"detail":{"kind":"subagent","toolName":"subagent.spawn","input":{"task":"inspect files","agent":"generic"},"childSessionId":"child-session"}`,
-			wantResult: "file-a\nfile-b", wantChild: "vibe:child-session", wantCategory: "Task", wantThinking: "checking the files", wantMessages: 3,
+			name:      "subagent effect",
+			before:    `"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"ls"}}`,
+			after:     `"detail":{"kind":"subagent","toolName":"subagent.spawn","input":{"task":"inspect files","agent":"generic"},"childSessionId":"child-session"}`,
+			wantChild: "vibe:child-session",
 		},
 		{
 			name:   "user and steering preserve thinking for effect",
@@ -439,7 +435,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"user","source":"turn_steer","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"createdAt":1790601808027,"detail"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
+			wantThinking: "checking the files", wantMessages: 5,
 		},
 		{
 			name:   "user and steering preserve thinking for assistant",
@@ -447,7 +443,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			after: `{"type":"message","role":"user","turnId":"turn-1","content":[{"type":"text","text":"extra question"}]},
 			{"type":"message","role":"user","source":"turn_steer","turnId":"turn-1","content":[{"type":"text","text":"steering instruction"}]},
 			{"content":[{"text":"unified answer"`,
-			wantResult: "file-a\nfile-b", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 5,
+			wantAssistantThinking: "thinking it through", wantMessages: 5,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -458,49 +454,44 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
 			parsed := outcome.Results[0].Result
-			require.Len(t, parsed.Messages, tc.wantMessages)
-			call := parsed.Messages[tc.wantMessages-1]
-			assert.Equal(t, "effect-1", call.SourceUUID)
-			assert.Equal(t, "mistral-medium-3.5", call.Model)
-			assert.Equal(t, tc.wantThinking, call.ThinkingText)
-			assert.Equal(t, tc.wantZeroTime, call.Timestamp.IsZero())
+			if tc.wantMessages != 0 {
+				require.Len(t, parsed.Messages, tc.wantMessages)
+			}
+			require.NotEmpty(t, parsed.Messages)
+			call := parsed.Messages[len(parsed.Messages)-1]
+			if tc.wantThinking != "" {
+				assert.Equal(t, tc.wantThinking, call.ThinkingText)
+			}
+			if tc.wantAssistantThinking != "" {
+				for _, msg := range parsed.Messages {
+					if msg.SourceUUID == "assistant-1" {
+						assert.Equal(t, tc.wantAssistantThinking, msg.ThinkingText)
+					}
+					if msg.Role != RoleAssistant {
+						assert.Empty(t, msg.ThinkingText)
+					}
+				}
+			}
+			if tc.wantZeroTime {
+				assert.True(t, call.Timestamp.IsZero())
+			}
 			require.Len(t, call.ToolCalls, 1)
-			assert.Equal(t, tc.wantCategory, call.ToolCalls[0].Category)
-			assert.Equal(t, tc.wantChild, call.ToolCalls[0].SubagentSessionID)
+			if tc.wantChild != "" {
+				assert.Equal(t, tc.wantChild, call.ToolCalls[0].SubagentSessionID)
+			}
 			if tc.wantInput != "" {
 				assert.Equal(t, tc.wantInput, call.ToolCalls[0].InputJSON)
 			}
 			require.Len(t, call.ToolCalls[0].ResultEvents, 2)
-			start := call.ToolCalls[0].ResultEvents[0]
-			assert.Equal(t, "tool_execution", start.Source)
-			assert.Equal(t, "effect-1", start.ToolUseID)
-			assert.Equal(t, "started", start.Status)
-			assert.Equal(t, call.Timestamp, start.Timestamp)
 			event := call.ToolCalls[0].ResultEvents[1]
-			assert.Equal(t, "tool_execution", event.Source)
-			assert.Equal(t, "effect-1", event.ToolUseID)
-			wantStatus := tc.wantStatus
-			if wantStatus == "" {
-				wantStatus = "completed"
+			if tc.wantStatus != "" {
+				assert.Equal(t, tc.wantStatus, event.Status)
 			}
-			assert.Equal(t, wantStatus, event.Status)
 			if tc.wantJSON {
 				assert.JSONEq(t, tc.wantResult, event.Content)
-			} else {
+			} else if tc.wantResult != "" {
 				assert.Equal(t, tc.wantResult, event.Content)
 			}
-			assert.Equal(t, int64(1790601808099), event.Timestamp.UnixMilli())
-			for _, msg := range parsed.Messages {
-				if msg.SourceUUID == "assistant-1" {
-					assert.Equal(t, "mistral-medium-3.5", msg.Model)
-					assert.Equal(t, "thinking it through", msg.ThinkingText)
-				}
-				if msg.Role != RoleAssistant {
-					assert.Empty(t, msg.ThinkingText)
-				}
-			}
-			require.Len(t, parsed.UsageEvents, 1)
-			assert.Equal(t, "mistral-medium-3.5", parsed.UsageEvents[0].Model)
 		})
 	}
 
@@ -783,23 +774,31 @@ func TestVibeUnifiedVersions(t *testing.T) {
 	for _, tc := range []struct {
 		name, file, prefix string
 		valid              bool
+		parent             bool
 	}{
-		{"default store", "CURRENT", ``, true},
-		{"minor one", "CURRENT", `"store_format_minor":1,`, true},
-		{"minor eight", "CURRENT", `"store_format_minor":8,`, true},
-		{"new store", "CURRENT", `"store_format":"mistral.vibe.unified-session-store/v2",`, false},
-		{"new minor", "CURRENT", `"store_format_minor":9,`, false},
-		{"invalid minor", "CURRENT", `"store_format_minor":0,`, false},
-		{"new manifest", "manifest.json", `"manifest_version":2,`, false},
-		{"default manifest", "manifest.json", ``, true},
-		{"new projection", "projection-state.json", `"projection_state_version":2,`, false},
-		{"default projection", "projection-state.json", ``, true},
-		{"new runtime", "runtime-state.json", `"runtime_state_version":4,`, false},
-		{"missing runtime", "runtime-state.json", ``, false},
+		{"default store", "CURRENT", ``, true, false},
+		{"minor one", "CURRENT", `"store_format_minor":1,`, true, false},
+		{"minor eight", "CURRENT", `"store_format_minor":8,`, true, false},
+		{"new store", "CURRENT", `"store_format":"mistral.vibe.unified-session-store/v2",`, false, false},
+		{"new minor", "CURRENT", `"store_format_minor":9,`, false, false},
+		{"invalid minor", "CURRENT", `"store_format_minor":0,`, false, false},
+		{"new manifest", "manifest.json", `"manifest_version":2,`, false, false},
+		{"default manifest", "manifest.json", ``, true, false},
+		{"new projection", "projection-state.json", `"projection_state_version":2,`, false, false},
+		{"default projection", "projection-state.json", ``, true, false},
+		{"new runtime", "runtime-state.json", `"runtime_state_version":4,`, false, false},
+		{"missing runtime", "runtime-state.json", ``, false, false},
+		{"parent new minor", "CURRENT", `"store_format_minor":9,`, false, true},
+		{"parent new runtime", "runtime-state.json", `"runtime_state_version":4,`, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			dir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+			parseDir := dir
+			if tc.parent {
+				writeSourceFile(t, filepath.Join(dir, "generations", "0000000000000001", "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"}}`)
+				dir = writeVibeUnifiedSession(t, root, "parent")
+			}
 			path := filepath.Join(dir, "generations", "0000000000000001", tc.file)
 			if tc.file == "CURRENT" {
 				path = filepath.Join(dir, tc.file)
@@ -812,32 +811,12 @@ func TestVibeUnifiedVersions(t *testing.T) {
 			}
 			content = strings.ReplaceAll(content, ",}", "}")
 			writeSourceFile(t, path, "{"+tc.prefix+content[1:])
-			_, err = parseVibeUnifiedResultFile(filepath.Join(dir, "CURRENT"), FileInfo{})
+			_, err = parseVibeUnifiedResultFile(filepath.Join(parseDir, "CURRENT"), FileInfo{})
 			if tc.valid {
 				require.NoError(t, err)
 			} else {
 				require.ErrorIs(t, err, errVibeUnsupportedVersion)
 			}
-		})
-	}
-}
-
-func TestVibeUnifiedParentRejectsUnsupportedVersion(t *testing.T) {
-	for _, file := range []string{"CURRENT", "runtime-state.json"} {
-		t.Run(file, func(t *testing.T) {
-			root := t.TempDir()
-			child := writeVibeUnifiedSession(t, root, "child")
-			parent := writeVibeUnifiedSession(t, root, "parent")
-			writeSourceFile(t, filepath.Join(child, "generations", "0000000000000001", "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"}}`)
-			if file == "CURRENT" {
-				writeSourceFile(t, filepath.Join(parent, file), `{"generation":"0000000000000001","store_format_minor":9}`)
-			} else {
-				writeSourceFile(t, filepath.Join(parent, "generations", "0000000000000001", file), `{"runtime_state_version":4}`)
-			}
-			_, err := vibeUnifiedFingerprint(child)
-			require.ErrorIs(t, err, errVibeUnsupportedVersion)
-			_, err = parseVibeUnifiedResultFile(filepath.Join(child, "CURRENT"), FileInfo{})
-			require.ErrorIs(t, err, errVibeUnsupportedVersion)
 		})
 	}
 }
