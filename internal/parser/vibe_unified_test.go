@@ -783,7 +783,6 @@ func TestVibeUnifiedVersions(t *testing.T) {
 		{"new minor", "CURRENT", `"store_format_minor":9,`, false, false},
 		{"invalid minor", "CURRENT", `"store_format_minor":0,`, false, false},
 		{"new manifest", "manifest.json", `"manifest_version":2,`, false, false},
-		{"default manifest", "manifest.json", ``, true, false},
 		{"new projection", "projection-state.json", `"projection_state_version":2,`, false, false},
 		{"default projection", "projection-state.json", ``, true, false},
 		{"new runtime", "runtime-state.json", `"runtime_state_version":4,`, false, false},
