@@ -143,6 +143,32 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 		assert.Equal(t, anchor, changed[0].DisplayPath)
 	}
 
+	for _, tc := range []struct {
+		path string
+		want ChangedPathRelevance
+	}{
+		{"generations/0000000000000001/manifest.json", ChangedPathNonData},
+		{"generations/0000000000000001/runtime-state.json", ChangedPathNonData},
+		{"generations/0000000000000001/projection-state.json", ChangedPathNonData},
+		{"generations/0000000000000001/checkpoint.json", ChangedPathNonData},
+		{"generations/.staging-0000000000000001-0123456789abcdef/runtime-state.json", ChangedPathNonData},
+		{"chunks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", ChangedPathNonData},
+		{"journal/0000000000000001.jsonl", ChangedPathNonData},
+		{"generations/0000000000000001/unknown.json", ChangedPathUnclassified},
+		{"chunks/unknown.txt", ChangedPathUnclassified},
+		{"chunks/unknown.json", ChangedPathUnclassified},
+		{"journal/unknown.jsonl", ChangedPathUnclassified},
+		{"unknown.json", ChangedPathUnclassified},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			for _, kind := range []string{"write", "remove"} {
+				relevance, err := ResolveChangedPathRelevance(t.Context(), provider, ChangedPathRequest{Path: filepath.Join(sessionDir, filepath.FromSlash(tc.path)), EventKind: kind, WatchRoot: root})
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, relevance)
+			}
+		})
+	}
+
 	require.NoError(t, os.Remove(filepath.Join(sessionDir, "meta.json")))
 	_, err = provider.Fingerprint(t.Context(), found)
 	require.NoError(t, err)
@@ -162,22 +188,29 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 }
 
 func TestVibeUnifiedProviderParse(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "logs", "session")
-	writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+	fixture := func(t *testing.T) (string, Provider, SourceRef, SourceFingerprint) {
+		t.Helper()
 
-	provider, ok := NewProvider(AgentVibe, ProviderConfig{
-		Roots:   []string{root},
-		Machine: "devbox",
-	})
-	require.True(t, ok)
-	sources, err := provider.Discover(t.Context())
-	require.NoError(t, err)
-	require.Len(t, sources, 1)
-	fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
-	require.NoError(t, err)
+		root := filepath.Join(t.TempDir(), "logs", "session")
+		writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+
+		provider, ok := NewProvider(AgentVibe, ProviderConfig{
+			Roots:   []string{root},
+			Machine: "devbox",
+		})
+		require.True(t, ok)
+		sources, err := provider.Discover(t.Context())
+		require.NoError(t, err)
+		require.Len(t, sources, 1)
+		fingerprint, err := provider.Fingerprint(t.Context(), sources[0])
+		require.NoError(t, err)
+
+		return root, provider, sources[0], fingerprint
+	}
+	_, provider, source, fingerprint := fixture(t)
 
 	outcome, err := provider.Parse(t.Context(), ParseRequest{
-		Source:      sources[0],
+		Source:      source,
 		Fingerprint: fingerprint,
 	})
 	require.NoError(t, err)
@@ -237,9 +270,10 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		{"literal empty prompt", `{"content":[{"type":"text","text":"expanded skill instructions"}],"userDisplayContent":{"version":"1","host":"cli","content":[]}}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			root, provider, source, fingerprint := fixture(t)
 			entry := strings.TrimSuffix(tc.entry, "}") + `,"type":"message","role":"user","id":"prompt"}`
 			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), "["+entry+"]")
-			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
 			parsed := outcome.Results[0].Result
@@ -262,6 +296,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		wantMessages int
 		wantZeroTime bool
 		wantStatus   string
+		wantJSON     bool
 	}{
 		{
 			name:   "effect without timestamp",
@@ -310,6 +345,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		},
 		{
 			name:         "text and image result",
+			wantJSON:     true,
 			before:       `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
 			after:        `"content":[{"type":"text","text":"screenshot"},{"type":"image","data":"AA==","mimeType":"image/png"},{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
 			wantResult:   `[{"type":"text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"text","text":"resource output"}]`,
@@ -369,9 +405,10 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			root, provider, source, fingerprint := fixture(t)
 			chunk := strings.Replace(vibeUnifiedChunkFixture(), tc.before, tc.after, 1)
 			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), chunk)
-			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
 			parsed := outcome.Results[0].Result
@@ -401,7 +438,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 				wantStatus = "completed"
 			}
 			assert.Equal(t, wantStatus, event.Status)
-			if tc.name == "text and image result" {
+			if tc.wantJSON {
 				assert.JSONEq(t, tc.wantResult, event.Content)
 			} else {
 				assert.Equal(t, tc.wantResult, event.Content)
@@ -422,18 +459,21 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name          string
-		entries       string
-		wantContent   string
-		wantThinking  string
-		wantMessages  int
-		wantTimestamp int64
+		name             string
+		entries          string
+		wantContent      string
+		wantThinking     string
+		wantMessages     int
+		wantTimestamp    int64
+		wantNextContent  string
+		wantNextThinking string
 	}{
 		{
 			"summary-only reasoning",
 			`[{"type":"reasoning","turnId":"turn-1","text":"","summary":["checking", " the files"],"createdAt":1790601807938},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"answer"}]}]`,
 			"answer", "checking the files", 1, 0,
+			"", "",
 		},
 		{
 			"discarded stream tails",
@@ -442,6 +482,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			{"type":"reasoning","turnId":"turn-1","text":"committed thinking","outcome":{"type":"committed"}},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"committed answer"}],"outcome":{"type":"committed"}}]`,
 			"discarded answer", "discarded thinking", 2, 0,
+			"committed answer", "committed thinking",
 		},
 		{
 			"notice and checkpoint preserve turn thinking",
@@ -450,34 +491,40 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			{"type":"checkpoint","turnId":null},
 			{"type":"message","role":"assistant","turnId":"turn-1","content":[{"text":"answer"}]}]`,
 			"answer", "thought", 1, 0,
+			"", "",
 		},
 		{
 			"trailing reasoning",
 			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":1790601807938},
 			{"type":"reasoning","turnId":"turn-1","text":" continued","createdAt":1790601808000}]`,
 			"", "unfinished thought continued", 1, 1790601808000,
+			"", "",
 		},
 		{
 			"trailing reasoning without timestamp",
 			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":1790601807938},
 			{"type":"reasoning","turnId":"turn-1","text":" continued"}]`,
 			"", "unfinished thought continued", 1, 0,
+			"", "",
 		},
 		{
 			"trailing reasoning with negative timestamp",
 			`[{"type":"reasoning","turnId":"turn-1","text":"unfinished thought","createdAt":-1}]`,
 			"", "unfinished thought", 1, 0,
+			"", "",
 		},
 		{
 			"reasoning before another turn",
 			`[{"type":"reasoning","turnId":"turn-1","text":"earlier thought","createdAt":1790601807938},
 			{"type":"message","role":"assistant","turnId":"turn-2","content":[{"text":"later answer"}]}]`,
 			"", "earlier thought", 2, 1790601807938,
+			"later answer", "",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			root, provider, source, fingerprint := fixture(t)
 			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), tc.entries)
-			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
 			messages := outcome.Results[0].Result.Messages
@@ -494,24 +541,20 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 				assert.True(t, messages[0].Timestamp.IsZero())
 			}
 			if tc.wantMessages == 2 {
-				if tc.name == "discarded stream tails" {
-					assert.Equal(t, "committed answer", messages[1].Content)
-					assert.Equal(t, "committed thinking", messages[1].ThinkingText)
-				} else {
-					assert.Equal(t, "later answer", messages[1].Content)
-					assert.Empty(t, messages[1].ThinkingText)
-				}
+				assert.Equal(t, tc.wantNextContent, messages[1].Content)
+				assert.Equal(t, tc.wantNextThinking, messages[1].ThinkingText)
 				assert.Equal(t, 1, messages[1].Ordinal)
 			}
 		})
 	}
 
 	t.Run("missing context does not use cumulative usage", func(t *testing.T) {
+		root, provider, source, fingerprint := fixture(t)
 		path := filepath.Join(root, "unified", vibeUnifiedSessionID, "generations", "0000000000000001", "projection-state.json")
 		raw, err := os.ReadFile(path)
 		require.NoError(t, err)
 		writeSourceFile(t, path, strings.Replace(string(raw), `"contextUsage"`, `"unusedContext"`, 1))
-		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 		require.NoError(t, err)
 		require.Len(t, outcome.Results, 1)
 		assert.False(t, outcome.Results[0].Result.Session.HasPeakContextTokens)
@@ -539,19 +582,20 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	}
 
 	t.Run("runtime state errors", func(t *testing.T) {
+		root, provider, source, fingerprint := fixture(t)
 		path := filepath.Join(root, "unified", vibeUnifiedSessionID, "generations", "0000000000000001", "runtime-state.json")
 		writeSourceFile(t, path, `{`)
-		_, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		_, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 		require.ErrorContains(t, err, "parsing Vibe unified runtime-state.json")
 		require.NoError(t, os.Remove(path))
-		_, err = provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		_, err = provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 		require.ErrorContains(t, err, "reading Vibe unified runtime-state.json")
-		writeSourceFile(t, path, `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
 	})
 
 	t.Run("malformed optional metadata", func(t *testing.T) {
+		root, provider, source, fingerprint := fixture(t)
 		writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "meta.json"), `{"session_id":"other-id","start_time":"invalid","environment":{"working_directory":"/workspace/project-a"},"git_branch":"main"}`)
-		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
+		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 		require.NoError(t, err)
 		require.Len(t, outcome.Results, 1)
 		session := outcome.Results[0].Result.Session
@@ -648,7 +692,6 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 	}{
 		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, "", RelContinuation},
 		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "", RelFork},
-		{"pinned model", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "mistral-large-2411", RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()

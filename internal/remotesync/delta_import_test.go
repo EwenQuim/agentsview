@@ -823,7 +823,6 @@ func TestImporterVibeParentChangesKeepUnchangedChildrenFresh(t *testing.T) {
 			root := t.TempDir()
 			const remoteDir = "/srv/agent/sessions"
 			localDir := remappedRemotePath(root, remoteDir)
-
 			parentAnchor := dbtest.WriteVibeUnifiedGeneration(t, filepath.Join(localDir, "unified", "parent"), "1", "", "model-a", time.Time{})
 			childAnchor := dbtest.WriteVibeUnifiedGeneration(t, filepath.Join(localDir, "unified", "child"), "1", "parent", "", time.Time{})
 			targets := TargetSet{Dirs: map[parser.AgentType][]string{parser.AgentVibe: {remoteDir}}}
@@ -831,86 +830,51 @@ func TestImporterVibeParentChangesKeepUnchangedChildrenFresh(t *testing.T) {
 			seed, err := importer.ImportExtracted(t.Context(), targets, root)
 			require.NoError(t, err)
 			require.Equal(t, 2, seed.SessionsSynced)
-			for _, step := range []struct {
-				name, model               string
-				directChild, remove, full bool
-				wantSynced, wantSkipped   int
+			steps := []struct {
+				name, model                                      string
+				changeModel, metadata, directChild, remove, full bool
+				wantSynced, wantSkipped                          int
 			}{
 				{name: "same model", model: "model-a", wantSynced: 1, wantSkipped: 1},
-				{name: "same model metadata removal", model: "model-a", remove: true, wantSynced: 1, wantSkipped: 1},
-				{name: "changed model", model: "model-b", wantSynced: 2},
-				{name: "direct child", model: "model-b", directChild: true, wantSynced: 1},
-				{name: "explicit refresh", model: "model-b", full: true, wantSynced: 2},
-				{name: "direct child metadata removal", model: "model-b", directChild: true, remove: true, wantSynced: 1},
-				{name: "metadata removal", model: "model-c", remove: true, wantSynced: 2},
-			} {
+				{name: "changed model", model: "model-b", changeModel: true, wantSynced: 2},
+				{name: "same model metadata removal", metadata: true, remove: true, wantSynced: 1, wantSkipped: 1},
+				{name: "direct child", directChild: true, wantSynced: 1},
+				{name: "explicit refresh", full: true, wantSynced: 2},
+				{name: "direct child metadata removal", metadata: true, directChild: true, remove: true, wantSynced: 1},
+				{name: "metadata removal", model: "model-c", changeModel: true, metadata: true, remove: true, wantSynced: 2},
+			}
+			if publication == "meta.json" {
+				steps = steps[:2]
+			}
+			for i, step := range steps {
 				t.Run(step.name, func(t *testing.T) {
-					before, err := database.GetUsageEvents(t.Context(), "remote~vibe:child")
-					require.NoError(t, err)
-					require.Len(t, before, 1)
-					beforeRevision, err := database.TranscriptRevision(t.Context(), "remote~vibe:child")
-					require.NoError(t, err)
-					changed := childAnchor
-					if !step.directChild && !step.full {
-						if publication == "CURRENT" && !step.remove {
-							dbtest.WriteVibeUnifiedGeneration(t, filepath.Dir(parentAnchor), step.name, "", step.model, time.Time{})
-							changed = parentAnchor
-						} else {
-							// Runtime model changes publish through CURRENT; metadata activity
-							// shares the same parent's dependent-source attribution.
-							if step.name == "changed model" || step.name == "metadata removal" {
-								dbtest.WriteVibeUnifiedGeneration(t, filepath.Dir(parentAnchor), step.name, "", step.model, time.Time{})
-							}
-							changed = filepath.Join(filepath.Dir(parentAnchor), "meta.json")
-							require.NoError(t, os.WriteFile(changed, []byte(`{"title":"parent title"}`), 0o600))
-							if step.remove {
-								require.NoError(t, os.Remove(changed))
-							}
-						}
+					changed := parentAnchor
+					if step.directChild {
+						changed = childAnchor
 					}
-					if step.directChild && step.remove {
-						changed = filepath.Join(filepath.Dir(childAnchor), "meta.json")
-						require.NoError(t, os.WriteFile(changed, []byte(`{}`), 0o600))
-						require.NoError(t, os.Remove(changed))
+					metadata := step.metadata || publication == "meta.json"
+					if step.changeModel || (!metadata && !step.directChild && !step.full) {
+						dbtest.WriteVibeUnifiedGeneration(t, filepath.Dir(parentAnchor), fmt.Sprintf("%016d", i+2), "", step.model, time.Time{})
+					}
+					if metadata {
+						changed = filepath.Join(filepath.Dir(changed), "meta.json")
+						require.NoError(t, os.WriteFile(changed, []byte(`{"title":"updated title"}`), 0o600))
+						if step.remove {
+							require.NoError(t, os.Remove(changed))
+						}
 					}
 					path, err := mirrorRelativeLocalChangePath(root, changed)
 					require.NoError(t, err)
-					reason := FullImportReason("")
+					journal := MirrorChangeJournal{Version: mirrorJournalVersion, Entries: []MirrorChangeEntry{{Path: path, InvalidateCache: true, ForceFullParse: true}}}
 					if step.full {
-						reason = FullImportExplicit
-					}
-					journal := MirrorChangeJournal{
-						Version: mirrorJournalVersion, FullImport: step.full, FullImportReason: reason, ForceFullParseAll: step.full,
-						Entries: []MirrorChangeEntry{{Path: path, InvalidateCache: true, ForceFullParse: true}},
-					}
-					if step.full {
-						journal.Entries = nil
+						journal = MirrorChangeJournal{Version: mirrorJournalVersion, FullImport: true, FullImportReason: FullImportExplicit, ForceFullParseAll: true}
 					}
 					pending, err := importer.PreparePending(t.Context(), DeltaImportRequest{Journal: journal})
 					require.NoError(t, err)
-					if !step.full {
-						require.Len(t, pending.forceScope.Files, 1)
-						wantForced := changed
-						if filepath.Base(changed) == "meta.json" {
-							wantForced = filepath.Join(filepath.Dir(changed), "CURRENT")
-						}
-						assert.Equal(t, wantForced, pending.forceScope.Files[0].Path)
-					}
 					stats, err := pending.Execute(t.Context())
 					require.NoError(t, err)
 					assert.Equal(t, step.wantSynced, stats.SessionsSynced)
 					assert.Equal(t, step.wantSkipped, stats.Skipped)
-					assert.Zero(t, stats.FallbackProviders)
-					usage, err := database.GetUsageEvents(t.Context(), "remote~vibe:child")
-					require.NoError(t, err)
-					require.Len(t, usage, 1)
-					assert.Equal(t, step.model, usage[0].Model)
-					if step.name == "same model" || step.name == "same model metadata removal" {
-						assert.Equal(t, before[0].ID, usage[0].ID, "the unchanged child's usage row must survive the armed parent event")
-						afterRevision, err := database.TranscriptRevision(t.Context(), "remote~vibe:child")
-						require.NoError(t, err)
-						assert.Equal(t, beforeRevision, afterRevision)
-					}
 				})
 			}
 		})

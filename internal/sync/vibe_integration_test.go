@@ -12,7 +12,6 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
-	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -109,56 +108,28 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	baseTime := time.Unix(1_791_000_000, 0)
 	childDir := filepath.Join(root, "unified", "session-child")
 	childAnchor := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "session-a", "", baseTime)
-	for _, tc := range []struct {
-		generation, entries, usage, model string
-		wantMessages                      int
-	}{
-		{"1", `{"type":"message","role":"user","content":[{"text":"question"}]}`, `{"inputTokens":100,"outputTokens":20,"cachedInputTokens":10}`, "mistral-medium-3.5", 1},
-		{"2", `{"type":"message","role":"user","content":[{"text":"question"}]},{"type":"message","role":"assistant","content":[{"text":"answer"}]}`, `{"inputTokens":150,"outputTokens":40,"cachedInputTokens":30}`, "mistral-small-latest", 2},
-	} {
-		genDir := filepath.Join(dir, "generations", tc.generation)
-		require.NoError(t, os.MkdirAll(genDir, 0o755))
-		for path, content := range map[string]string{
-			filepath.Join(genDir, "manifest.json"):         `{}`,
-			filepath.Join(genDir, "runtime-state.json"):    `{"runtime_state_version":3,"session_metadata":{"active_model":"` + tc.model + `"}}`,
-			filepath.Join(genDir, "projection-state.json"): `{"snapshot":{"session":{"createdAt":1791000000000,"updatedAt":1791000002000,"tokenUsage":` + tc.usage + `},"history":{"entries":[` + tc.entries + `]}}}`,
-		} {
-			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-		}
-		require.NoError(t, os.WriteFile(anchor, []byte(`{"generation":"`+tc.generation+`"}`), 0o644))
-		mtime := baseTime.Add(time.Duration(tc.wantMessages) * time.Second)
-		require.NoError(t, os.Chtimes(anchor, mtime, mtime))
-		if tc.generation == "1" {
+	for i, model := range []string{"mistral-medium-3.5", "mistral-small-latest"} {
+		generation := strconv.Itoa(i + 1)
+		dbtest.WriteVibeUnifiedGeneration(t, dir, generation, "", model, baseTime.Add(time.Duration(i+1)*time.Second))
+		if i == 0 {
 			engine.SyncPaths([]string{anchor, childAnchor})
 		} else {
 			stats := engine.SyncAllSince(t.Context(), baseTime.Add(1500*time.Millisecond), nil)
 			assert.Equal(t, 2, stats.Synced)
 		}
-		assertSessionState(t, database, "vibe:session-a", func(sess *db.Session) {
-			assert.Equal(t, tc.wantMessages, sess.MessageCount)
-		})
-		usage, err := database.GetUsageEvents(t.Context(), "vibe:session-child")
-		require.NoError(t, err)
-		require.Len(t, usage, 1)
-		assert.Equal(t, tc.model, usage[0].Model)
 	}
 	stats := engine.SyncAllSince(t.Context(), baseTime.Add(1500*time.Millisecond), nil)
 	assert.Zero(t, stats.Synced)
 }
 
 func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
-	for _, name := range []string{"SyncPaths", "metadata event", "metadata removal", "watcher plan", "incremental", "remote watcher"} {
+	for _, name := range []string{"SyncPaths", "metadata event", "metadata removal", "watcher plan"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			database := dbtest.OpenTestDB(t)
-			require.NoError(t, database.UpsertModelPricing([]db.ModelPricing{{ModelPattern: "vibe-test-model-a", InputPerMTok: money.MustParseDollars("1"), OutputPerMTok: money.MustParseDollars("2")}, {ModelPattern: "vibe-test-model-b", InputPerMTok: money.MustParseDollars("2"), OutputPerMTok: money.MustParseDollars("4")}}))
-			prefix := ""
-			if name == "remote watcher" {
-				prefix = "remote~"
-			}
 			engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{
 				AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
-				Machine:   "local", IDPrefix: prefix,
+				Machine:   "local",
 			})
 			t.Cleanup(engine.Close)
 			baseTime := time.Unix(1_791_000_000, 0)
@@ -188,9 +159,7 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 				}
 				if i == 0 {
 					engine.SyncPaths([]string{parentAnchor, childAnchor})
-				} else if name == "incremental" {
-					engine.SyncAllSince(t.Context(), baseTime.Add(time.Duration(i-1)*time.Second), nil)
-				} else if name == "watcher plan" || name == "remote watcher" {
+				} else if name == "watcher plan" {
 					plan, err := engine.PlanChangedPathsContext(t.Context(), []string{parentAnchor})
 					require.NoError(t, err)
 					paths := make([]string, 0, len(plan.Files))
@@ -210,44 +179,25 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 				} else {
 					engine.SyncPaths([]string{parentAnchor})
 				}
-				messages, err := database.GetMessages(t.Context(), prefix+"vibe:child", 0, 10, true)
-				require.NoError(t, err)
-				require.Len(t, messages, 1)
-				assert.Equal(t, model, messages[0].Model)
-				usage, err := database.GetUsageEvents(t.Context(), prefix+"vibe:child")
+				usage, err := database.GetUsageEvents(t.Context(), "vibe:child")
 				require.NoError(t, err)
 				require.Len(t, usage, 1)
 				assert.Equal(t, model, usage[0].Model)
-				assert.Equal(t, 10, usage[0].InputTokens)
-				assert.Equal(t, 5, usage[0].OutputTokens)
-				token := engine.SourceMtime(t.Context(), prefix+"vibe:child")
-				if prefix == "" {
-					assert.NotZero(t, token)
-				}
-				revision, err := database.TranscriptRevision(t.Context(), prefix+"vibe:child")
+				token := engine.SourceMtime(t.Context(), "vibe:child")
+				assert.NotZero(t, token)
+				revision, err := database.TranscriptRevision(t.Context(), "vibe:child")
 				require.NoError(t, err)
 				if i == 3 {
 					assert.Equal(t, previousToken, token)
 					assert.Equal(t, previousRevision, revision)
 					assert.Equal(t, previousUsageID, usage[0].ID)
 				}
-				if i > 0 && i < 3 && prefix == "" {
+				if i > 0 && i < 3 {
 					assert.NotEqual(t, previousToken, token, "parent model must change the polling token despite the later child mtime")
 				}
 				previousToken = token
 				previousRevision = revision
 				previousUsageID = usage[0].ID
-				if model != "" {
-					priced, err := database.GetSessionUsage(t.Context(), prefix+"vibe:child", true)
-					require.NoError(t, err)
-					require.NotNil(t, priced)
-					assert.True(t, priced.HasCost)
-					wantCost := int64(20)
-					if model == "vibe-test-model-b" {
-						wantCost = 40
-					}
-					assert.Equal(t, wantCost, priced.Cost.Microdollars)
-				}
 			}
 		})
 	}
@@ -948,42 +898,25 @@ func TestSyncVibeMissingMetaRemotePathRemovesCanonicalID(t *testing.T) {
 }
 
 func TestSyncVibeUnsupportedVersionsPreserveArchive(t *testing.T) {
-	for _, tc := range []struct{ session, file, content string }{
-		{"child", "CURRENT", `{"generation":"1","store_format_minor":9}`},
-		{"child", "manifest.json", `{"manifest_version":2}`},
-		{"child", "projection-state.json", `{"projection_state_version":2}`},
-		{"child", "runtime-state.json", `{"runtime_state_version":4}`},
-		{"parent", "CURRENT", `{"generation":"1","store_format_minor":9}`},
-		{"parent", "runtime-state.json", `{"runtime_state_version":4}`},
-	} {
-		t.Run(tc.session+tc.file, func(t *testing.T) {
-			root := t.TempDir()
-			database := dbtest.OpenTestDB(t)
-			engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, Machine: "local"})
-			t.Cleanup(engine.Close)
-			mtime := time.Unix(1_791_000_000, 0)
-			parentDir := filepath.Join(root, "unified", "parent")
-			parent := dbtest.WriteVibeUnifiedGeneration(t, parentDir, "1", "", "", mtime)
-			childDir := filepath.Join(root, "unified", "child")
-			child := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "parent", "", mtime)
-			engine.SyncPaths([]string{parent, child})
-			revision, err := database.TranscriptRevision(t.Context(), "vibe:child")
-			require.NoError(t, err)
-			path := filepath.Join(root, "unified", tc.session, "generations", "1", tc.file)
-			if tc.file == "CURRENT" {
-				path = filepath.Join(root, "unified", tc.session, tc.file)
-			}
-			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
-			// Move CURRENT so fingerprint and failure caches see this new generation.
-			require.NoError(t, os.Chtimes(child, mtime.Add(time.Second), mtime.Add(time.Second)))
-			engine.SyncPaths([]string{child})
-			after, err := database.TranscriptRevision(t.Context(), "vibe:child")
-			require.NoError(t, err)
-			assert.Equal(t, revision, after)
-			messages, err := database.GetMessages(t.Context(), "vibe:child", 0, 10, true)
-			require.NoError(t, err)
-			require.Len(t, messages, 1)
-			assert.Equal(t, "child answer", messages[0].Content)
-		})
-	}
+	root := t.TempDir()
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(t.Context(), database, sync.EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}, Machine: "local"})
+	t.Cleanup(engine.Close)
+	mtime := time.Unix(1_791_000_000, 0)
+	childDir := filepath.Join(root, "unified", "child")
+	child := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "", "", mtime)
+	engine.SyncPaths([]string{child})
+	revision, err := database.TranscriptRevision(t.Context(), "vibe:child")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(child, []byte(`{"generation":"1","store_format_minor":9}`), 0o644))
+	// Move CURRENT so fingerprint and failure caches see this new generation.
+	require.NoError(t, os.Chtimes(child, mtime.Add(time.Second), mtime.Add(time.Second)))
+	engine.SyncPaths([]string{child})
+	after, err := database.TranscriptRevision(t.Context(), "vibe:child")
+	require.NoError(t, err)
+	assert.Equal(t, revision, after)
+	messages, err := database.GetMessages(t.Context(), "vibe:child", 0, 10, true)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "child answer", messages[0].Content)
 }

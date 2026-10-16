@@ -649,56 +649,52 @@ func TestOmnigentDependentSourceExpansionPreservesEngineIDPrefixing(
 }
 
 func TestVibeDependentSourceExpansionStaysBounded(t *testing.T) {
-	for _, unrelated := range []int{1, 200} {
-		t.Run(strconv.Itoa(unrelated), func(t *testing.T) {
-			database := openTestDB(t)
-			root := t.TempDir()
-			parentID := "remote~vibe:parent"
-			var resolved []string
-			engine := NewEngine(t.Context(), database, EngineConfig{
-				AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
-				Machine:   "local", IDPrefix: "remote~",
-				StoredPathResolver: func(path string) (string, bool) {
-					resolved = append(resolved, path)
-					return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(path, "/remote/"))), true
-				},
-			})
-			t.Cleanup(engine.Close)
-			for _, name := range []string{"parent", "child", "missing", "trashed", "foreign"} {
-				path := filepath.Join(root, "unified", name, "CURRENT")
-				if name != "missing" {
-					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-					require.NoError(t, os.WriteFile(path, []byte(`{"generation":"1"}`), 0o644))
-				}
-				storedPath := "/remote/unified/" + name + "/CURRENT"
-				session := db.Session{ID: "remote~vibe:" + name, Agent: "vibe", FilePath: &storedPath}
-				if name != "parent" {
-					session.ParentSessionID = &parentID
-				}
-				if name == "foreign" {
-					session.Machine = "other"
-				}
-				require.NoError(t, database.UpsertSession(t.Context(), session))
-			}
-			require.NoError(t, database.SoftDeleteSession(t.Context(), "remote~vibe:trashed"))
-			for i := range unrelated {
-				path := "/remote/unified/unrelated-" + strconv.Itoa(i) + "/CURRENT"
-				require.NoError(t, database.UpsertSession(t.Context(), db.Session{
-					ID: "remote~vibe:unrelated-" + strconv.Itoa(i), Agent: "vibe", FilePath: &path,
-				}))
-			}
-			provider := engine.sources().providerFactories[parser.AgentVibe].NewProvider(parser.ProviderConfig{Roots: []string{root}})
-			parentPath := filepath.Join(root, "unified", "parent", "CURRENT")
-			parent, found, err := provider.FindSource(t.Context(), parser.FindSourceRequest{StoredFilePath: parentPath})
-			require.NoError(t, err)
-			require.True(t, found)
-			expanded, err := engine.expandInheritedMetadataSources(t.Context(), provider, []parser.SourceRef{parent})
-			require.NoError(t, err)
-			require.Len(t, expanded, 2)
-			assert.Equal(t, filepath.Join(root, "unified", "child", "CURRENT"), providerDiscoveredPath(expanded[1]))
-			assert.ElementsMatch(t, []string{"/remote/unified/child/CURRENT", "/remote/unified/missing/CURRENT"}, resolved)
-		})
+	database := openTestDB(t)
+	root := t.TempDir()
+	parentID := "remote~vibe:parent"
+	var resolved []string
+	engine := NewEngine(t.Context(), database, EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
+		Machine:   "local", IDPrefix: "remote~",
+		StoredPathResolver: func(path string) (string, bool) {
+			resolved = append(resolved, path)
+			return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(path, "/remote/"))), true
+		},
+	})
+	t.Cleanup(engine.Close)
+	for _, name := range []string{"parent", "child", "missing", "trashed", "foreign"} {
+		path := filepath.Join(root, "unified", name, "CURRENT")
+		if name != "missing" {
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, []byte(`{"generation":"1"}`), 0o644))
+		}
+		storedPath := "/remote/unified/" + name + "/CURRENT"
+		session := db.Session{ID: "remote~vibe:" + name, Agent: "vibe", FilePath: &storedPath}
+		if name != "parent" {
+			session.ParentSessionID = &parentID
+		}
+		if name == "foreign" {
+			session.Machine = "other"
+		}
+		require.NoError(t, database.UpsertSession(t.Context(), session))
 	}
+	require.NoError(t, database.SoftDeleteSession(t.Context(), "remote~vibe:trashed"))
+	for i := range 200 {
+		path := "/remote/unified/unrelated-" + strconv.Itoa(i) + "/CURRENT"
+		require.NoError(t, database.UpsertSession(t.Context(), db.Session{
+			ID: "remote~vibe:unrelated-" + strconv.Itoa(i), Agent: "vibe", FilePath: &path,
+		}))
+	}
+	provider := engine.sources().providerFactories[parser.AgentVibe].NewProvider(parser.ProviderConfig{Roots: []string{root}})
+	parentPath := filepath.Join(root, "unified", "parent", "CURRENT")
+	parent, found, err := provider.FindSource(t.Context(), parser.FindSourceRequest{StoredFilePath: parentPath})
+	require.NoError(t, err)
+	require.True(t, found)
+	expanded, err := engine.expandInheritedMetadataSources(t.Context(), provider, []parser.SourceRef{parent})
+	require.NoError(t, err)
+	require.Len(t, expanded, 2)
+	assert.Equal(t, filepath.Join(root, "unified", "child", "CURRENT"), providerDiscoveredPath(expanded[1]))
+	assert.ElementsMatch(t, []string{"/remote/unified/child/CURRENT", "/remote/unified/missing/CURRENT"}, resolved)
 }
 
 // TestBaselineFailureDoesNotPromoteSkipCache pins the omnigent-only cache
@@ -891,51 +887,5 @@ func TestVibeChangedPathForcesOnlyChangedSession(t *testing.T) {
 		{child, filepath.Join(filepath.Dir(child), "meta.json"), "remove", true},
 	} {
 		assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
-	}
-}
-
-func TestVibeInternalEventsDoNotWidenChangedPathPlan(t *testing.T) {
-	root := t.TempDir()
-	anchor := filepath.Join(root, "unified", "session", "CURRENT")
-	require.NoError(t, os.MkdirAll(filepath.Dir(anchor), 0o755))
-	require.NoError(t, os.WriteFile(anchor, []byte(`{"generation":"0000000000000001"}`), 0o600))
-	engine := NewEngine(t.Context(), openTestDB(t), EngineConfig{AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}}})
-	t.Cleanup(engine.Close)
-	for _, tc := range []struct {
-		path     string
-		fallback bool
-	}{
-		{"unified/session/generations/0000000000000001/manifest.json", false},
-		{"unified/session/generations/0000000000000001/runtime-state.json", false},
-		{"unified/session/generations/0000000000000001/projection-state.json", false},
-		{"unified/session/generations/0000000000000001/checkpoint.json", false},
-		{"unified/session/generations/.staging-0000000000000001-0123456789abcdef/runtime-state.json", false},
-		{"unified/session/chunks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", false},
-		{"unified/session/journal/0000000000000001.jsonl", false},
-		{"unified/session/generations/0000000000000001/unknown.json", true},
-		{"unified/session/chunks/unknown.txt", true},
-		{"unified/session/chunks/unknown.json", true},
-		{"unified/session/journal/unknown.jsonl", true},
-		{"unified/session/unknown.json", true},
-	} {
-		t.Run(tc.path, func(t *testing.T) {
-			path := filepath.Join(root, filepath.FromSlash(tc.path))
-			// Remote removals classify with the same bounded path evidence as writes.
-			for _, exists := range []bool{true, false} {
-				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-				require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o600))
-				if !exists {
-					require.NoError(t, os.Remove(path))
-				}
-				plan, err := engine.PlanChangedPathsContext(t.Context(), []string{path})
-				require.NoError(t, err)
-				assert.Empty(t, plan.Files)
-				if tc.fallback {
-					assert.Equal(t, []parser.AgentType{parser.AgentVibe}, plan.FallbackProviders)
-				} else {
-					assert.Empty(t, plan.FallbackProviders)
-				}
-			}
-		})
 	}
 }
