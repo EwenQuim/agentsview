@@ -885,7 +885,10 @@ func TestVibeChangedPathForcesOnlyChangedSession(t *testing.T) {
 		{child, filepath.Join(parent, "meta.json"), "write", false},
 		{child, child, "write", true},
 		{child, filepath.Join(filepath.Dir(child), "meta.json"), "write", true},
-		{child, filepath.Join(parent, "meta.json"), "remove", true},
+		{child, filepath.Join(parent, "meta.json"), "remove", false},
+		{child, filepath.Join(parent, "CURRENT"), "remove", false},
+		{child, child, "remove", true},
+		{child, filepath.Join(filepath.Dir(child), "meta.json"), "remove", true},
 	} {
 		assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
 	}

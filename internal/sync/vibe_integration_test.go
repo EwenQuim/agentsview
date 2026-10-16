@@ -94,23 +94,6 @@ func TestSyncAllSinceVibeMetaUpdateTriggersResync(t *testing.T) {
 	})
 }
 
-func writeVibeUnifiedChildFixture(t *testing.T, dir, parent string, mtime time.Time) string {
-	t.Helper()
-	genDir := filepath.Join(dir, "generations", "1")
-	anchor := filepath.Join(dir, "CURRENT")
-	require.NoError(t, os.MkdirAll(genDir, 0o755))
-	for path, content := range map[string]string{
-		anchor:                                 `{"generation":"1"}`,
-		filepath.Join(genDir, "manifest.json"): `{}`,
-		filepath.Join(genDir, "runtime-state.json"):    `{"runtime_state_version":3,"identity":{"kind":"subagent","parent_session_id":"` + parent + `"}}`,
-		filepath.Join(genDir, "projection-state.json"): `{"snapshot":{"session":{"tokenUsage":{"inputTokens":10,"outputTokens":5}},"history":{"entries":[{"type":"message","role":"assistant","content":[{"text":"child answer"}]}]}}}`,
-	} {
-		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-		require.NoError(t, os.Chtimes(path, mtime, mtime))
-	}
-	return anchor
-}
-
 func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -125,7 +108,7 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 	anchor := filepath.Join(dir, "CURRENT")
 	baseTime := time.Unix(1_791_000_000, 0)
 	childDir := filepath.Join(root, "unified", "session-child")
-	childAnchor := writeVibeUnifiedChildFixture(t, childDir, "session-a", baseTime)
+	childAnchor := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "session-a", "", baseTime)
 	for _, tc := range []struct {
 		generation, entries, usage, model string
 		wantMessages                      int
@@ -164,7 +147,7 @@ func TestSyncAllSinceVibeUnifiedGenerationTriggersResync(t *testing.T) {
 }
 
 func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
-	for _, name := range []string{"SyncPaths", "metadata event", "watcher plan", "incremental", "remote watcher"} {
+	for _, name := range []string{"SyncPaths", "metadata event", "metadata removal", "watcher plan", "incremental", "remote watcher"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			database := dbtest.OpenTestDB(t)
@@ -182,7 +165,7 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 			parentDir := filepath.Join(root, "unified", "parent")
 			parentAnchor := filepath.Join(parentDir, "CURRENT")
 			childDir := filepath.Join(root, "unified", "child")
-			childAnchor := writeVibeUnifiedChildFixture(t, childDir, "parent", baseTime.Add(time.Hour))
+			childAnchor := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "parent", "", baseTime.Add(time.Hour))
 			var previousToken int64
 			var previousRevision string
 			var previousUsageID int64
@@ -217,9 +200,12 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 					assert.ElementsMatch(t, []string{parentAnchor, childAnchor}, paths)
 					_, err = engine.SyncChangedPathPlanContext(t.Context(), plan, nil)
 					require.NoError(t, err)
-				} else if name == "metadata event" {
+				} else if name == "metadata event" || name == "metadata removal" {
 					metaPath := filepath.Join(parentDir, "meta.json")
 					require.NoError(t, os.WriteFile(metaPath, []byte(`{"title":"updated parent title"}`), 0o644))
+					if name == "metadata removal" {
+						require.NoError(t, os.Remove(metaPath))
+					}
 					engine.SyncPaths([]string{metaPath})
 				} else {
 					engine.SyncPaths([]string{parentAnchor})
@@ -977,9 +963,9 @@ func TestSyncVibeUnsupportedVersionsPreserveArchive(t *testing.T) {
 			t.Cleanup(engine.Close)
 			mtime := time.Unix(1_791_000_000, 0)
 			parentDir := filepath.Join(root, "unified", "parent")
-			parent := writeVibeUnifiedChildFixture(t, parentDir, "", mtime)
+			parent := dbtest.WriteVibeUnifiedGeneration(t, parentDir, "1", "", "", mtime)
 			childDir := filepath.Join(root, "unified", "child")
-			child := writeVibeUnifiedChildFixture(t, childDir, "parent", mtime)
+			child := dbtest.WriteVibeUnifiedGeneration(t, childDir, "1", "parent", "", mtime)
 			engine.SyncPaths([]string{parent, child})
 			revision, err := database.TranscriptRevision(t.Context(), "vibe:child")
 			require.NoError(t, err)

@@ -2553,11 +2553,11 @@ func providerChangedPathForceParse(
 	mode parser.ProviderMigrationMode,
 ) bool {
 	if isUnifiedVibeSource(agent, sourcePath) {
-		if eventKind == "remove" {
-			return true
-		}
 		if vibeDependentSourceForEvent(agent, sourcePath, eventPath) {
 			return false
+		}
+		if eventKind == "remove" {
+			return true
 		}
 		if filepath.Clean(sourcePath) == filepath.Clean(eventPath) || (filepath.Base(eventPath) == "meta.json" && filepath.Dir(sourcePath) == filepath.Dir(eventPath)) {
 			return true

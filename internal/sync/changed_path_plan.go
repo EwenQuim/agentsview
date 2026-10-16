@@ -524,7 +524,7 @@ func (plan *ChangedPathPlan) PruneScope(
 			continue
 		}
 		for _, file := range attribution.files {
-			if providerChangedPathEventKind(path) != "remove" && vibeDependentSourceForEvent(file.Agent, file.Path, path) {
+			if vibeDependentSourceForEvent(file.Agent, file.Path, path) {
 				continue
 			}
 			files = append(files, file)
