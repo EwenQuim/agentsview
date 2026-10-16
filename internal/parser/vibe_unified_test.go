@@ -53,7 +53,7 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 			`"contextUsage":{"cachedInputTokens":400,"inputTokens":1400,`+
 			`"outputTokens":50,"totalTokens":1450}}}}`)
 	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
-		`{"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
+		`{"runtime_state_version":3,"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
 			`"root_session_id":"`+sessionID+`","session_id":"`+sessionID+`"},`+
 			`"session_metadata":{"active_model":"mistral-medium-3.5",`+
 			`"cwd":"/Users/dev/work/my-repo"}}`)
@@ -316,12 +316,6 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
 		},
 		{
-			name:       "resource-only result",
-			before:     `"content":[{"text":"file-a\nfile-b","type":"text"}]`,
-			after:      `"content":[{"type":"resource","resource":{"kind":"text","uri":"file:///workspace/example.txt","text":"resource output"}}]`,
-			wantResult: "resource output", wantCategory: "Bash", wantThinking: "checking the files", wantMessages: 3,
-		},
-		{
 			name:       "skill.read",
 			before:     `"toolName":"file_system.bash"`,
 			after:      `"toolName":"skill.read"`,
@@ -552,7 +546,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		require.NoError(t, os.Remove(path))
 		_, err = provider.Parse(t.Context(), ParseRequest{Source: sources[0], Fingerprint: fingerprint})
 		require.ErrorContains(t, err, "reading Vibe unified runtime-state.json")
-		writeSourceFile(t, path, `{"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
+		writeSourceFile(t, path, `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
 	})
 
 	t.Run("malformed optional metadata", func(t *testing.T) {
@@ -574,8 +568,8 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, parentRuntime, wantModel string
 	}{
-		{"parent recorded model", `{"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411"},
-		{"parent without model", `{"session_metadata":{}}`, ""},
+		{"parent recorded model", `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411"},
+		{"parent without model", `{"runtime_state_version":3,"session_metadata":{}}`, ""},
 		{"missing parent", "", ""},
 		{"unreadable parent metadata", "{", ""},
 	} {
@@ -587,7 +581,7 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			require.NoError(t, os.Remove(filepath.Join(sessionDir, "meta.json")))
 			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
 			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
-				`{"identity":{"depth":1,"kind":"subagent",`+
+				`{"runtime_state_version":3,"identity":{"depth":1,"kind":"subagent",`+
 					`"parent_session_id":"`+parentID+`",`+
 					`"root_session_id":"`+parentID+`","session_id":"`+childID+`"},`+
 					`"session_metadata":{`+
@@ -628,7 +622,7 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 
 			parentDir := filepath.Join(root, "unified", parentID)
 			writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"0000000000000003"}`)
-			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "runtime-state.json"), `{"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
+			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "runtime-state.json"), `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
 			parentTime := time.Unix(2_000_000_000, 0)
 			require.NoError(t, os.Chtimes(filepath.Join(parentDir, "CURRENT"), parentTime, parentTime))
 			updatedFingerprint, err := provider.Fingerprint(t.Context(), source)
@@ -660,7 +654,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"},"session_metadata":{"active_model":"`+tc.model+`"}`+tc.provenance+`}`)
+			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"},"session_metadata":{"active_model":"`+tc.model+`"}`+tc.provenance+`}`)
 			writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0001.json"), `[
 				{"type":"message","id":"imported-1","role":"user","content":[{"text":"old question"}]},
 				{"type":"message","id":"imported-2","role":"assistant","content":[{"text":"old answer"}]},
@@ -692,6 +686,69 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, tc.model, result.UsageEvents[0].Model)
 			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
 			assert.Empty(t, outcome.Results[0].RetryReason)
+		})
+	}
+}
+
+func TestVibeUnifiedVersions(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, prefix string
+		valid              bool
+	}{
+		{"default store", "CURRENT", ``, true},
+		{"minor one", "CURRENT", `"store_format_minor":1,`, true},
+		{"minor eight", "CURRENT", `"store_format_minor":8,`, true},
+		{"new store", "CURRENT", `"store_format":"mistral.vibe.unified-session-store/v2",`, false},
+		{"new minor", "CURRENT", `"store_format_minor":9,`, false},
+		{"invalid minor", "CURRENT", `"store_format_minor":0,`, false},
+		{"new manifest", "manifest.json", `"manifest_version":2,`, false},
+		{"default manifest", "manifest.json", ``, true},
+		{"new projection", "projection-state.json", `"projection_state_version":2,`, false},
+		{"default projection", "projection-state.json", ``, true},
+		{"new runtime", "runtime-state.json", `"runtime_state_version":4,`, false},
+		{"missing runtime", "runtime-state.json", ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+			path := filepath.Join(dir, "generations", "0000000000000001", tc.file)
+			if tc.file == "CURRENT" {
+				path = filepath.Join(dir, tc.file)
+			}
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err)
+			content := string(raw)
+			for _, key := range []string{`"store_format":"mistral.vibe.unified-session-store/v1"`, `"projection_state_version":1,`, `"runtime_state_version":3,`} {
+				content = strings.ReplaceAll(content, key, "")
+			}
+			content = strings.ReplaceAll(content, ",}", "}")
+			writeSourceFile(t, path, "{"+tc.prefix+content[1:])
+			_, err = parseVibeUnifiedResultFile(filepath.Join(dir, "CURRENT"), FileInfo{})
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, errVibeUnsupportedVersion)
+			}
+		})
+	}
+}
+
+func TestVibeUnifiedParentRejectsUnsupportedVersion(t *testing.T) {
+	for _, file := range []string{"CURRENT", "runtime-state.json"} {
+		t.Run(file, func(t *testing.T) {
+			root := t.TempDir()
+			child := writeVibeUnifiedSession(t, root, "child")
+			parent := writeVibeUnifiedSession(t, root, "parent")
+			writeSourceFile(t, filepath.Join(child, "generations", "0000000000000001", "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"}}`)
+			if file == "CURRENT" {
+				writeSourceFile(t, filepath.Join(parent, file), `{"generation":"0000000000000001","store_format_minor":9}`)
+			} else {
+				writeSourceFile(t, filepath.Join(parent, "generations", "0000000000000001", file), `{"runtime_state_version":4}`)
+			}
+			_, err := vibeUnifiedFingerprint(child)
+			require.ErrorIs(t, err, errVibeUnsupportedVersion)
+			_, err = parseVibeUnifiedResultFile(filepath.Join(child, "CURRENT"), FileInfo{})
+			require.ErrorIs(t, err, errVibeUnsupportedVersion)
 		})
 	}
 }

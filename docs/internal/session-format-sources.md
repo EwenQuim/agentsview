@@ -4031,6 +4031,9 @@ schemas keep their existing ordering behavior.
   transcript, and `projection-state.json` carries the aggregate
   `tokenUsage` and `contextUsage`. Before chunk pooling, the transcript stays
   in `snapshot.history.entries` when manifest `chunks` is null or missing.
+  Agentsview reads store v1 minors 1–8, manifest v1, projection v1, and
+  required runtime v3. Missing store, manifest and projection versions default
+  to v1; a missing store minor defaults to 1. Newer versions return an error.
 - **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/mistralai/mistral-vibe.git` at
   `0685654a40a4035966891289065379a751a7e617`; see
@@ -4090,12 +4093,14 @@ schemas keep their existing ordering behavior.
   Fingerprints hash `CURRENT` and `meta.json`, because
   `CURRENT` pins the manifest by SHA-256 and the manifest pins every document.
   When a session has no recorded model, its fingerprint also includes its
-  parent's recorded model, empty while unavailable. Reverified 2026-10-07
+  immediate runtime parent's recorded model, empty while unavailable.
+  Import provenance and grandparents do not supply models. Reverified 2026-10-15
   with `TestVibeUnifiedProviderParseSubagentSession`: parent model changes
-  and recovery change the child's hash without changing its size or mtime.
+  and recovery change the child's hash without changing its own files.
   Parent-only events refresh archived descendants through the indexed parent
-  lookup. Unified session polling includes the fingerprint hash, so inherited
-  model changes are visible even when child files have a later modification time.
+  lookup. Parent timestamps act only as incremental discovery watermarks.
+  Matching unified hashes establish freshness across parent timestamp changes;
+  polling uses the hash alone, so same-model parent turns leave children unchanged.
 - **Agentsview:** `internal/parser/vibe.go`, `internal/parser/vibe_unified.go`,
   and `internal/parser/vibe_provider.go`.
 

@@ -2552,6 +2552,9 @@ func providerChangedPathForceParse(
 	eventKind string,
 	mode parser.ProviderMigrationMode,
 ) bool {
+	if isUnifiedVibeSource(agent, sourcePath) && isUnifiedVibeSource(agent, eventPath) && filepath.Clean(sourcePath) != filepath.Clean(eventPath) && eventKind != "remove" {
+		return false
+	}
 	if processFileUsesProvider(agent) {
 		// Goose needs no force here despite its one-second timestamps: it
 		// declares FingerprintHashRequiredForFreshness, so same-mtime edits
@@ -15386,14 +15389,14 @@ func (e *Engine) providerSourceUnchangedInDB(
 		return false
 	}
 	statsMatch := storedSize == fingerprint.Size && storedMtime == fingerprint.MTimeNS
-	if !statsMatch && (fingerprint.Hash == "" || !providerFingerprintHashEstablishesFreshness(agent)) {
+	if !statsMatch && (fingerprint.Hash == "" || !providerFingerprintHashEstablishesFreshness(agent, lookupPath)) {
 		return false
 	}
 	var storedHash string
 	if fingerprint.Hash != "" && (!statsMatch || semantics.FingerprintHashRequiredForFreshness) {
 		storedHash, _ = e.db.GetFileHashByAgentPath(ctx, lookupPath, string(agent))
 	}
-	if !providerFingerprintMatchesStored(agent, fingerprint, storedSize, storedMtime, storedHash, semantics.FingerprintHashRequiredForFreshness) {
+	if !providerFingerprintMatchesStored(agent, lookupPath, fingerprint, storedSize, storedMtime, storedHash, semantics.FingerprintHashRequiredForFreshness) {
 		return false
 	}
 	project, _ := e.db.GetProjectByAgentPath(ctx, lookupPath, string(agent))
@@ -15413,9 +15416,9 @@ func providerSourceMetadataFresh(stored db.VirtualContainerMemberFreshness) bool
 		!parser.NeedsProjectReparse(stored.Project)
 }
 
-func providerFingerprintMatchesStored(agent parser.AgentType, fingerprint parser.SourceFingerprint, size, mtime int64, hash string, required bool) bool {
+func providerFingerprintMatchesStored(agent parser.AgentType, path string, fingerprint parser.SourceFingerprint, size, mtime int64, hash string, required bool) bool {
 	if size != fingerprint.Size || mtime != fingerprint.MTimeNS {
-		return fingerprint.Hash != "" && providerFingerprintHashEstablishesFreshness(agent) && hash == fingerprint.Hash
+		return fingerprint.Hash != "" && providerFingerprintHashEstablishesFreshness(agent, path) && hash == fingerprint.Hash
 	}
 	return fingerprint.Hash == "" || !required || hash == fingerprint.Hash
 }
@@ -15466,7 +15469,12 @@ func (e *Engine) providerFingerprintHashMatchesDB(ctx context.Context,
 	storedHash, ok := e.db.GetFileHashByAgentPath(ctx,
 		lookupPath, string(agent),
 	)
-	return ok && providerFingerprintMatchesStored(agent, fingerprint, fingerprint.Size, fingerprint.MTimeNS, storedHash, required)
+	return ok && providerFingerprintMatchesStored(agent, lookupPath, fingerprint, fingerprint.Size, fingerprint.MTimeNS, storedHash, required)
+}
+
+func isUnifiedVibeSource(agent parser.AgentType, path string) bool {
+	_, unified := parser.VibeUnifiedSessionID(path)
+	return agent == parser.AgentVibe && unified
 }
 
 // providerFingerprintHashEstablishesFreshness reports whether a matching
@@ -15477,9 +15485,10 @@ func (e *Engine) providerFingerprintHashMatchesDB(ctx context.Context,
 // member's full parse input (session row, messages, selected transcript), so
 // a matching stored hash bounds re-parse and rewrite work to the changed
 // members instead of the whole archive. Providers whose fingerprint stat is
-// per-source stay stat-gated: a stat mismatch there means real change.
-func providerFingerprintHashEstablishesFreshness(agent parser.AgentType) bool {
-	return agent == parser.AgentHermes || agent == parser.AgentAugureDesktop
+// per-source stay stat-gated. Unified Vibe hashes include the inherited
+// model; parent timestamps are only discovery watermarks.
+func providerFingerprintHashEstablishesFreshness(agent parser.AgentType, path string) bool {
+	return agent == parser.AgentHermes || agent == parser.AgentAugureDesktop || isUnifiedVibeSource(agent, path)
 }
 
 // shouldSkipByPath checks file size and mtime against what is
@@ -20656,12 +20665,16 @@ func (e *Engine) providerSessionSourceMtime(
 			return 0
 		}
 	}
-	_, unifiedVibe := parser.VibeUnifiedSessionID(providerDiscoveredPath(source))
-	if (def.Type == parser.AgentCursorIDE || (def.Type == parser.AgentVibe && unifiedVibe)) && fingerprint.Hash != "" {
+	if isUnifiedVibeSource(def.Type, providerDiscoveredPath(source)) && fingerprint.Hash != "" {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(fingerprint.Hash))
+		return int64(h.Sum64())
+	}
+	if def.Type == parser.AgentCursorIDE && fingerprint.Hash != "" {
 		// SourceMtime is an equality-only change token (see the Codebuff
 		// branch): folding the member content digest in lets the watcher's
 		// polling fallback see an edit that leaves lastUpdatedAt untouched,
-		// or an inherited Vibe model change below the child's later mtime.
+		// even when its timestamp stays unchanged.
 		h := fnv.New64a()
 		_, _ = fmt.Fprintf(h, "%d|%s", fingerprint.MTimeNS, fingerprint.Hash)
 		return int64(h.Sum64())
@@ -20784,11 +20797,10 @@ func (e *Engine) SourceMtime(ctx context.Context, sessionID string) int64 {
 	if path == "" {
 		return 0
 	}
-	_, unifiedVibe := parser.VibeUnifiedSessionID(path)
 	if e.isProviderAuthoritative(def.Type) &&
 		(providerSourcePathNeedsFingerprint(path) ||
 			providerSourceMtimeNeedsFingerprint(def.Type) ||
-			(def.Type == parser.AgentVibe && unifiedVibe)) {
+			isUnifiedVibeSource(def.Type, path)) {
 		if mtime := e.providerSessionSourceMtime(
 			ctx, def, sessionID, rawSessionID, path,
 		); mtime != 0 {

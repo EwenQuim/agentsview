@@ -858,3 +858,18 @@ func TestBaselineFailureKeepsRowlessCacheForOtherProviders(t *testing.T) {
 		engine.SnapshotSkipCache(),
 		"non-omnigent rowless cache writes stay immediate")
 }
+
+func TestVibeUnifiedHashFreshness(t *testing.T) {
+	for _, tc := range []struct {
+		path, storedHash string
+		want             bool
+	}{
+		{"/sessions/unified/child/CURRENT", "child-inputs", true},
+		{"/sessions/unified/child/CURRENT", "previous-inputs", false},
+		{"/sessions/child/messages.jsonl", "child-inputs", false},
+	} {
+		t.Run(tc.path+tc.storedHash, func(t *testing.T) {
+			assert.Equal(t, tc.want, providerFingerprintMatchesStored(parser.AgentVibe, tc.path, parser.SourceFingerprint{Size: 10, MTimeNS: 200, Hash: "child-inputs"}, 10, 100, tc.storedHash, true))
+		})
+	}
+}

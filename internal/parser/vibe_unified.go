@@ -35,7 +35,9 @@ import (
 // checkpoint).
 
 type vibeUnifiedCurrent struct {
-	Generation string `json:"generation"`
+	Generation       string `json:"generation"`
+	StoreFormat      string `json:"store_format"`
+	StoreFormatMinor int    `json:"store_format_minor"`
 }
 
 type vibeUnifiedManifest struct {
@@ -152,9 +154,12 @@ func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading Vibe unified CURRENT: %w", err)
 	}
-	var current vibeUnifiedCurrent
+	current := vibeUnifiedCurrent{StoreFormat: "mistral.vibe.unified-session-store/v1", StoreFormatMinor: 1}
 	if err := json.Unmarshal(raw, &current); err != nil {
 		return "", fmt.Errorf("parsing Vibe unified CURRENT: %w", err)
+	}
+	if current.StoreFormat != "mistral.vibe.unified-session-store/v1" || current.StoreFormatMinor < 1 || current.StoreFormatMinor > 8 {
+		return "", fmt.Errorf("%w: store %s minor %d", errVibeUnsupportedVersion, current.StoreFormat, current.StoreFormatMinor)
 	}
 	if !isSafeSinglePathComponent(current.Generation) {
 		return "", errors.New("invalid generation in Vibe unified CURRENT")
@@ -257,7 +262,10 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
 	if sessionModel == "" {
-		sessionModel, _ = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		sessionModel, _, err = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		if err != nil {
+			return result, err
+		}
 	}
 	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
 	if err != nil {
@@ -471,10 +479,23 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 	return call
 }
 
+var errVibeUnsupportedVersion = errors.New("unsupported Vibe unified version")
+
 func readVibeUnifiedDoc(genDir, name string, v any) error {
 	raw, err := os.ReadFile(filepath.Join(genDir, name))
 	if err != nil {
 		return fmt.Errorf("reading Vibe unified %s: %w", name, err)
+	}
+	versions := struct {
+		Manifest   int `json:"manifest_version"`
+		Projection int `json:"projection_state_version"`
+		Runtime    int `json:"runtime_state_version"`
+	}{Manifest: 1, Projection: 1}
+	if err := json.Unmarshal(raw, &versions); err != nil {
+		return fmt.Errorf("parsing Vibe unified %s: %w", name, err)
+	}
+	if (name == "manifest.json" && versions.Manifest != 1) || (name == "projection-state.json" && versions.Projection != 1) || (name == "runtime-state.json" && versions.Runtime != 3) {
+		return fmt.Errorf("%w: %s", errVibeUnsupportedVersion, name)
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		return fmt.Errorf("parsing Vibe unified %s: %w", name, err)
@@ -508,24 +529,30 @@ func vibeUnifiedToolResultContent(content gjson.Result) string {
 	return string(encoded)
 }
 
-func vibeUnifiedParentModel(sessionDir, parentID string) (string, int64) {
+func vibeUnifiedParentModel(sessionDir, parentID string) (string, int64, error) {
 	if !isSafeSinglePathComponent(parentID) {
-		return "", 0
+		return "", 0, nil
 	}
 	parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
 	parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
 	if err != nil {
-		return "", 0
+		if errors.Is(err, errVibeUnsupportedVersion) {
+			return "", 0, err
+		}
+		return "", 0, nil
 	}
 	var parentMeta vibeUnifiedRuntimeMetadata
 	if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err != nil {
-		return "", 0
+		if errors.Is(err, errVibeUnsupportedVersion) {
+			return "", 0, err
+		}
+		return "", 0, nil
 	}
 	info, err := os.Stat(filepath.Join(parentDir, "CURRENT"))
 	if err != nil {
-		return parentMeta.SessionMetadata.ActiveModel, 0
+		return parentMeta.SessionMetadata.ActiveModel, 0, nil
 	}
-	return parentMeta.SessionMetadata.ActiveModel, info.ModTime().UnixNano()
+	return parentMeta.SessionMetadata.ActiveModel, info.ModTime().UnixNano(), nil
 }
 
 // CURRENT pins the manifest and its documents by digest; inherited models can change independently.
@@ -558,7 +585,10 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 		return SourceFingerprint{}, err
 	}
 	if runtimeMeta.SessionMetadata.ActiveModel == "" {
-		parentModel, parentMtime := vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		parentModel, parentMtime, err := vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		if err != nil {
+			return SourceFingerprint{}, err
+		}
 		_, _ = fmt.Fprintf(hash, "parent-model:%s\n", parentModel)
 		mtime = max(mtime, parentMtime)
 	}
