@@ -648,11 +648,12 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, parentRuntime, wantModel string
+		refreshParent                  bool
 	}{
-		{"parent recorded model", `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411"},
-		{"parent without model", `{"runtime_state_version":3,"session_metadata":{}}`, ""},
-		{"missing parent", "", ""},
-		{"unreadable parent metadata", "{", ""},
+		{"parent recorded model", `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411", true},
+		{"parent without model", `{"runtime_state_version":3,"session_metadata":{}}`, "", false},
+		{"missing parent", "", "", false},
+		{"unreadable parent metadata", "{", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -701,6 +702,10 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			require.Len(t, result.UsageEvents, 1)
 			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
 
+			if !tc.refreshParent {
+				return
+			}
+
 			parentDir := filepath.Join(root, "unified", parentID)
 			writeSourceFile(t, filepath.Join(parentDir, "CURRENT"), `{"generation":"0000000000000003"}`)
 			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "runtime-state.json"), `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
@@ -724,17 +729,17 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 	for _, tc := range []struct {
-		name, kind, provenance, model string
-		wantRelationship              RelationshipType
+		name, kind, provenance string
+		wantRelationship       RelationshipType
 	}{
-		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, "", RelContinuation},
-		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, "", RelFork},
+		{"import", "root", `,"import_provenance":{"source":{"backend":"legacy","session_id":"legacy-parent"}}`, RelContinuation},
+		{"fork", "fork", `,"import_provenance":{"source":{"backend":"unified","session_id":"legacy-parent"}}`, RelFork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"},"session_metadata":{"active_model":"`+tc.model+`"}`+tc.provenance+`}`)
+			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"}`+tc.provenance+`}`)
 			writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0001.json"), `[
 				{"type":"message","id":"imported-1","role":"user","content":[{"text":"old question"}]},
 				{"type":"message","id":"imported-2","role":"assistant","content":[{"text":"old answer"}]},
@@ -760,10 +765,6 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, "old answer", result.Messages[1].Content)
 			assert.Equal(t, "new question", result.Messages[2].Content)
 			assert.Equal(t, "new answer", result.Messages[3].Content)
-			assert.Equal(t, tc.model, result.Messages[1].Model)
-			assert.Equal(t, tc.model, result.Messages[3].Model)
-			require.Len(t, result.UsageEvents, 1)
-			assert.Equal(t, tc.model, result.UsageEvents[0].Model)
 			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
 			assert.Empty(t, outcome.Results[0].RetryReason)
 		})

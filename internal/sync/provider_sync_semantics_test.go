@@ -874,18 +874,20 @@ func TestVibeChangedPathForcesOnlyChangedSession(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "unified", "parent")
 	child := filepath.Join(filepath.Dir(parent), "child", "CURRENT")
 	for _, tc := range []struct {
-		source, event, kind string
-		want                bool
+		name, source, event, kind string
+		want                      bool
 	}{
-		{child, filepath.Join(parent, "CURRENT"), "write", false},
-		{child, filepath.Join(parent, "meta.json"), "write", false},
-		{child, child, "write", true},
-		{child, filepath.Join(filepath.Dir(child), "meta.json"), "write", true},
-		{child, filepath.Join(parent, "meta.json"), "remove", false},
-		{child, filepath.Join(parent, "CURRENT"), "remove", false},
-		{child, child, "remove", true},
-		{child, filepath.Join(filepath.Dir(child), "meta.json"), "remove", true},
+		{"parent publication write", child, filepath.Join(parent, "CURRENT"), "write", false},
+		{"parent metadata write", child, filepath.Join(parent, "meta.json"), "write", false},
+		{"child publication write", child, child, "write", true},
+		{"child metadata write", child, filepath.Join(filepath.Dir(child), "meta.json"), "write", true},
+		{"parent metadata removal", child, filepath.Join(parent, "meta.json"), "remove", false},
+		{"parent publication removal", child, filepath.Join(parent, "CURRENT"), "remove", false},
+		{"child publication removal", child, child, "remove", true},
+		{"child metadata removal", child, filepath.Join(filepath.Dir(child), "meta.json"), "remove", true},
 	} {
-		assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
+		})
 	}
 }
