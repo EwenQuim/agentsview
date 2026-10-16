@@ -181,16 +181,17 @@ fixtures retain this field; missing identities remain source-local.
 - **Pull request links (2026-10-07):** Checked against local Claude Code 2.1.x
   transcripts. The CLI appends top-level records shaped
   `{"type":"pr-link","prNumber":123,"prUrl":"https://github.com/owner/repo/pull/123","prRepository":"owner/repo","sessionId":"...","timestamp":"..."}`.
-  Claude Code PR-link records carry no message `uuid` and are re-appended, so
-  PR links apply to every split of a forked transcript.
-  One transcript can repeat the same link hundreds of times, so
-  Agentsview requires the recorded repository and number and keeps every
-  distinct normalized URL. Parser fixtures reverified on 2026-10-13 cover
-  more than 100 links, incremental reparsing only for new URLs, and rejection
-  when a recognized PR URL disagrees with its repository or number. The record does not say whether the session opened the
-  pull request. Undocumented upstream; evidence is `no-public-source`. See
-  `claudePRLink` in `internal/parser/claude.go` and
+  Claude Code PR-link records carry no message `uuid` and are re-appended,
+  so PR links apply to every split of a forked transcript. One transcript can
+  repeat the same link hundreds of times, so Agentsview requires the recorded
+  repository and number and keeps every distinct normalized URL. Parser
+  fixtures reverified on 2026-10-13 cover more than 100 links, incremental
+  reparsing only for new URLs, and rejection when a recognized PR URL
+  disagrees with its repository or number. The record does not say whether the
+  session opened the pull request. Undocumented upstream; evidence is
+  `no-public-source`. See `claudePRLink` in `internal/parser/claude.go` and
   `internal/parser/pr_links.go`.
+
 - **Continuation parsing (2026-10-01):** Rechecked the native provider with the
   synthetic two-parent fixture in
   `internal/parser/claude_subagent_parent_test.go`. An unreadable companion
@@ -213,7 +214,12 @@ fixtures retain this field; missing identities remain source-local.
   continuations and their companions into one source. Reparse preserves either
   seed transcript's stored path and refuses replacement if a recorded
   contributor is absent. Hosted capture plans and watcher discovery are
-  unchanged.
+  unchanged. Scoped discovery covers each affected project under its configured
+  root so companion transcripts remain in scope.
+  Rechecked 2026-10-14 with discovery fixtures: a project that vanishes or becomes
+  a file during raw-capture enumeration makes discovery incomplete even if it
+  returns before enumeration ends. Scoped reconciliation accepts missing paths
+  as absence.
 
 - **Title evidence (2026-09-13):** A local corpus measure sampled 768 files and
   found 12,261 `ai-title` records, with a mean of 15.96 records per file and a
@@ -296,6 +302,24 @@ fixtures retain this field; missing identities remain source-local.
   observations, not a documented producer contract; a bounded local corpus
   check did not independently reproduce those replies. The completed-empty
   rule above is separate analyzer policy.
+
+- **Persisted tool output cleanup (2026-10-14):** The
+  [`.claude` directory documentation](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically),
+  section "Cleaned up automatically", checked 2026-10-14, lists
+  `projects/<project>/<session>/tool-results/` among the paths Claude Code
+  deletes once they are older than `cleanupPeriodDays` (30 days by default),
+  beside the session transcript itself. The cutoff applies to each file's own
+  age, so a transcript that is still being written can outlive the side files
+  its placeholders name. Evidence for the cleanup is `documentation`; the page
+  does not describe the placeholder text. Agentsview marks a tool_result only
+  when it genuinely tried and failed to resolve a `persistedOutputPath` side
+  file, never from the placeholder text's own shape
+  (`parser.ParsedToolResult.PersistedOutputUnresolved`,
+  `TestParseClaudeSession_PersistedOutputUnresolvedOnlyOnUnresolvedOccurrence`).
+  Claude fingerprints hash only the transcript, so a deleted side file shows
+  only on a full parse; `ingest.ReconcileProviderHistory` then restores the
+  archived result instead of storing the placeholder over it, for both Claude
+  Code and iCodeMate CLI.
 
 - **Usage and cost:** Assistant messages persist input, output, cache-creation,
   and cache-read tokens. Model IDs are present. No authoritative persisted USD
@@ -692,7 +716,26 @@ fixtures retain this field; missing identities remain source-local.
   rebuilds keep metadata scoped to each file. Activity hints still find the
   newest surviving page without an original thread row. Reverified these
   archive and activity paths on 2026-10-02. Other Codex versions may differ.
-  Tests: `TestCodexRevertPageSessionsThroughAPI`,
+  Earlier builds, `0.148.0-alpha.15` through `0.154.0-alpha.6.2`, wrote the
+  header the other way round: the page's own rollout id in `session_meta.id`
+  and the thread id in `session_meta.session_id`. The writer at
+  [recorder.rs](https://github.com/openai/codex/blob/rust-v0.148.0-alpha.15/codex-rs/rollout/src/recorder.rs#L818-L820)
+  (rust-v0.148.0-alpha.15, checked 2026-10-04) only writes the thread id as
+  `conversation_id`. It does not produce this reversed header, so the reversed
+  shape and its version range come from local files and are `no-public-source`.
+  The `id` rule in the
+  entry above describes rust-v0.154.0 and later. AgentsView accepts the
+  older header only when the file name is `<session_id>_<id>`, and stores the page under the
+  file-name key like any other revert page. Data version 134 rebuilds archives
+  that stored such pages as `codex:<rollout>`, moving curation, trash, and
+  deletions to the canonical page whether its file is present or gone.
+  Tests: `TestCodexOlderHeaderRevertPageUpgradeMovesCuration`,
+  `TestCodexOlderHeaderRevertPageSecondSyncReparsesNothing`,
+  `TestCodexOlderHeaderRevertPageTitleAndSubagent`,
+  `TestCodexLegacyHeaderPageMovesToCanonicalPostgresRow`,
+  `TestCodexPurgedRolloutExclusionBlocksCanonicalPage`,
+  `TestPGSessionTombstoneIDsIncludeRetiredCodexRollout`,
+  `TestCodexRevertPageSessionsThroughAPI`,
   `TestCodexRevertPagesFormATree`, `TestCodexRevertPagesRetainDailyUsage`,
   `TestCodexRevertPageUpgradeReplacesStaleThreadRow`,
   `TestCopySessionMetadataFrom_CodexPagePins`,
@@ -3251,6 +3294,18 @@ schemas keep their existing ordering behavior.
   transcript or recorded end time and advances it when a state message is
   newer than both that value and `started_at`. The aggregate usage event still
   uses the recorded `ended_at`, falling back to `started_at`.
+- **Incremental sync check (2026-10-14):** Reverified the pinned
+  `hermes_state.py`: the `sessions` table has no modification timestamp, and
+  message contents, titles and usage can change without updating `ended_at`.
+  Agentsview therefore syncs each session as a virtual `state.db#<session ID>`
+  source and compares that session's content fingerprint before parsing it.
+  Hermes opens `state.db` in WAL mode and falls back to a rollback journal on
+  filesystems without WAL support. In WAL mode a commit can change only
+  `state.db-wal`, so session freshness includes the WAL file's modification
+  time while the WAL contains frames. Fingerprints name each file by its path
+  under the Hermes folder (`state.db`, `state.db-wal`, `sessions/<name>`)
+  rather than its absolute local path, so an archive unpacked into a fresh
+  folder keeps its fingerprints (`TestHermesFingerprintsIgnoreTheLocalFolder`).
 - **Usage and cost:** State records distinguish input, output, cache-read,
   cache-write, and reasoning tokens and can retain estimated or actual cost
   with status/source metadata. Agentsview uses provider-reported cost when it
@@ -3265,13 +3320,14 @@ schemas keep their existing ordering behavior.
   job name. Agentsview treats that generated title as unnamed and stores
   `group_key` as the job ID plus a hash of the source home path. Usage groups
   by project, machine, home and job ID. The pinned recognizer's legacy `job-1`
-  example was reverified on 2026-10-09. `TestHermesCronGroupsScopeHomes`
-  verifies that rewritten Windows paths keep distinct homes separate by
-  accepting both path separators. Names derive from the recorded
-  `session_name` at read time; usage-only archives show job IDs because their
-  titles are discarded. Resync copies preserve stored job IDs, including
-  imported sessions. Archived runs whose sources were gone before upgrading
-  stay individual sessions unless they already have a stored job ID.
+  example was reverified on 2026-10-09. The `home scopes` subtest of
+  `TestHermesCronStateGroups` verifies that rewritten Windows paths keep
+  distinct homes separate by accepting both path separators. Names derive
+  from the recorded `session_name` at read time; usage-only archives show job
+  IDs because their titles are discarded. Resync copies preserve stored job
+  IDs, including imported sessions. Archived runs whose sources were gone
+  before upgrading stay individual sessions unless they already have a stored
+  job ID.
 - **Agentsview:** `internal/parser/hermes.go` and
   `internal/parser/hermes_provider.go`; database and file generations are both
   recognized. Transcript projects use `platform`. A non-empty `state.db`
@@ -3620,7 +3676,9 @@ schemas keep their existing ordering behavior.
   trajectory JSON sidecars, plus the agent brain's plaintext
   `brain/<uuid>/.system_generated/logs/transcript.jsonl`, which is the session
   itself for a conversation with no database.
+
 - **Evidence:** `no-public-source`.
+
 - **Upstream:** Google's first-party Antigravity product and documentation
   surfaces and public repositories were searched 2026-07-19; no application
   database schema or protobuf definition for `gen_metadata` was published. For
@@ -3631,10 +3689,12 @@ schemas keep their existing ordering behavior.
   [Antigravity format notes](https://github.com/getagentseal/codeburn/blob/3472885629c41725b40c19c0780ecce148b067bf/docs/providers/antigravity.md)
   and
   [parser](https://github.com/getagentseal/codeburn/blob/3472885629c41725b40c19c0780ecce148b067bf/src/providers/antigravity.ts).
+
 - **Usage and cost:** Heuristically decoded generation metadata or sidecars
   provide uncached input, output (including thinking), cache-read, and model
   data. There is no separate reliable reasoning counter or reported USD cost;
   Agentsview catalog-prices tokens. Decode failures are surfaced explicitly.
+
 - **Agentsview:** `internal/parser/antigravity.go`,
   `internal/parser/antigravity_proto.go`,
   `internal/parser/antigravity_brain_transcript.go`, and
@@ -3649,26 +3709,28 @@ schemas keep their existing ordering behavior.
   roots share that ID. An unreadable database still reports an error instead
   of replacing archived content with a potentially incomplete transcript.
 
-- **Title evidence:** [antigravity-cli#1042](https://github.com/google-antigravity/antigravity-cli/issues/1042)
+- **Title evidence:**
+  [antigravity-cli#1042](https://github.com/google-antigravity/antigravity-cli/issues/1042)
   records `conversation_summaries.db` under `~/.gemini/antigravity/` and
-  `~/.gemini/antigravity-ide/`. The [contributor confirmed Antigravity 2.22.0 on macOS](https://github.com/kenn-io/agentsview/pull/2190#issuecomment-6120251760)
+  `~/.gemini/antigravity-ide/`. The
+  [contributor confirmed Antigravity 2.22.0 on macOS](https://github.com/kenn-io/agentsview/pull/2190#issuecomment-6120251760)
   uses `~/.gemini/antigravity/conversation_summaries.db` with
-  `conversation_summaries(conversation_id PRIMARY KEY, title, ...)` in the desktop
-  app. The IDE root is read the same way but remains unconfirmed;
-  `antigravity-cli` has no known title store. Titles stay out of the transcript
-  fingerprint: parsing copies the saved title, and
-  each sync pass copies changed titles onto stored sessions, including those
-  whose transcript is gone. A NULL title or unreadable store keeps the stored
-  title; a blank title clears it. Rechecked 2026-10-13 with synthetic stores:
-  missing tables or columns preserve archived titles; 17 roots retain applied
-  title states; checkpointed renames
-  with matching markers refresh on main-file or framed-WAL events, full sync,
-  or after five minutes. Reader-created frameless WAL events cause no reread;
-  watcher failures retry only the affected title stores. HTTP snapshots ignore
-  frameless WAL timestamps; unrelated-provider deltas reuse applied mirror
-  title states without reading stores or querying their archived sessions.
-  Title renames respect the archived session's working-directory filter during
-  sync and rebuilds, rechecked with synthetic stores on 2026-10-13.
+  `conversation_summaries(conversation_id PRIMARY KEY, title, ...)` in the
+  desktop app. The IDE root is read the same way but remains unconfirmed;
+  `antigravity-cli` has no known title store. Titles stay out of the
+  transcript fingerprint: parsing copies the saved title, and each sync pass
+  copies changed titles onto stored sessions, including those whose transcript
+  is gone. A NULL title or unreadable store keeps the stored title; a blank
+  title clears it. Rechecked 2026-10-13 with synthetic stores: missing tables
+  or columns preserve archived titles; 17 roots retain applied title states;
+  checkpointed renames with matching markers refresh on main-file or
+  framed-WAL events, full sync, or after five minutes. Reader-created
+  frameless WAL events cause no reread; watcher failures retry only the
+  affected title stores. HTTP snapshots ignore frameless WAL timestamps;
+  unrelated-provider deltas reuse applied mirror title states without reading
+  stores or querying their archived sessions. Title renames respect the
+  archived session's working-directory filter during sync and rebuilds,
+  rechecked with synthetic stores on 2026-10-13.
 
 ## Antigravity CLI (`antigravity-cli`)
 
@@ -4483,14 +4545,13 @@ schemas keep their existing ordering behavior.
   `tool-results/`, capped at 16 MiB with a truncation notice. AgentsView uses
   regular UTF-8 files in a real directory whose length matches `stored_bytes`
   or reaches the cap. Symlinked directories and Windows reparse points keep
-  the preview.
-  Other artifacts keep the stored preview, up to 4 KB.
-  Only assistant replay records supply historical model and provider identities.
-  Tool calls share them when attached to that assistant row; separate tool-call
-  rows and interrupted text leave those identities unknown.
+  the preview. Other artifacts keep the stored preview, up to 4 KB. Only
+  assistant replay records supply historical model and provider identities.
+  Tool calls share them when attached to that assistant row; separate
+  tool-call rows and interrupted text leave those identities unknown.
   [Provider IDs](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/config/model_provider.zig)
-  are strings for built-in providers or objects with `name` and `binding` for
-  configured providers. Model names retain publisher prefixes for pricing.
+  are strings for built-in providers or objects with `name` and `binding`
+  for configured providers. Model names retain publisher prefixes for pricing.
   Skill names percent-decode the location leaf.
   [Built-in tools](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/builtins/tools.zig)
   define the native names mapped to shared tool categories, including
@@ -4498,54 +4559,54 @@ schemas keep their existing ordering behavior.
   [Context compaction](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/session/session_log.zig)
   appends a `context_checkpoint` frame and preserves earlier messages.
   [Log-size compaction](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/session/session_compaction.zig)
-  copies unchanged frames verbatim and moves oversized inline file snapshots to
-  artifacts before atomically replacing the log. Every change reparses the
+  copies unchanged frames verbatim and moves oversized inline file snapshots
+  to artifacts before atomically replacing the log. Every change reparses the
   complete transcript.
   [Child state](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/subagent/child_state.zig)
-  records `subagent/owner.json` with `parent_id`. AgentsView imports that link
-  as a child session.
+  records `subagent/owner.json` with `parent_id`. AgentsView imports that
+  link as a child session.
   [Session layout](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/session/session_layout.zig)
-  allows 1 to 255 ASCII letters, digits, dots, underscores, or hyphens in session
-  and parent IDs, excluding `.` and `..` and the reserved `v2` name in any case.
+  allows 1 to 255 ASCII letters, digits, dots, underscores, or hyphens in
+  session and parent IDs, excluding `.` and `..` and the reserved `v2` name in
+  any case.
 - **Evidence:** `source`.
 - **Upstream:** Clone `https://github.com/vercel-labs/fx.git` at
-  `b9ca60d0102cf84cea061456c41206f66149b311`. Reverified 2026-10-13.
-  Fixtures were captured with fx v0.0.13.
+  `b9ca60d0102cf84cea061456c41206f66149b311`. Reverified 2026-10-13. Fixtures
+  were captured with fx v0.0.13.
 - **Usage and cost:**
   [Session usage](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/session/session_usage.zig)
-  stores cumulative per-model totals in `usage-v2.json` under `snapshot.models`.
-  fx removed the file at
+  stores cumulative per-model totals in `usage-v2.json` under
+  `snapshot.models`. fx removed the file at
   [bc968ad](https://github.com/vercel-labs/fx/commit/bc968ad),
   [vercel-labs/fx#1226](https://github.com/vercel-labs/fx/pull/1226), so only
-  older sessions have it.
-  Input includes cache reads and writes. AgentsView subtracts those tokens from
-  fresh input and prices the separate token counts from its catalog. It omits
-  fx's reported cost, which can be zero for subscription runs. Cumulative totals
-  leave peak context unknown. Usage dates use the earlier of the latest
-  transcript event and the usage file's modification time, falling back to the
-  latest event or session start when the modification time is unavailable.
-  Optional counts can be null, which AgentsView treats as unknown with zero tokens.
-- **Agentsview:** Sessions require schema 4. Event frames support schemas 1 to 3,
-  usage envelopes and owner markers schema 1, and usage snapshots schema 3.
+  older sessions have it. Input includes cache reads and writes. AgentsView
+  subtracts those tokens from fresh input and prices the separate token counts
+  from its catalog. It omits fx's reported cost, which can be zero for
+  subscription runs. Cumulative totals leave peak context unknown. Usage dates
+  use the earlier of the latest transcript event and the usage file's
+  modification time, falling back to the latest event or session start when
+  the modification time is unavailable. Optional counts can be null, which
+  AgentsView treats as unknown with zero tokens.
+- **Agentsview:** Sessions require schema 4. Event frames support schemas 1 to
+  3, usage envelopes and owner markers schema 1, and usage snapshots schema 3.
   Unsupported session, event, or owner versions skip the source. Encrypted
-  reasoning is excluded. Changes to `session.json`,
-  `usage-v2.json`, `subagent/owner.json`, or `tool-results/` refresh their owning
-  transcript. Tool-result entry names, sizes, modes, and modification times
-  contribute to freshness, including files restored after import. This suffices
-  because fx names result files by content hash, as defined by the
+  reasoning is excluded. Changes to `session.json`, `usage-v2.json`,
+  `subagent/owner.json`, or `tool-results/` refresh their owning transcript.
+  Tool-result entry names, sizes, modes, and modification times contribute to
+  freshness, including files restored after import. This suffices because fx
+  names result files by content hash, as defined by the
   [result store](https://github.com/vercel-labs/fx/blob/b9ca60d0102cf84cea061456c41206f66149b311/src/core/session/result_store.zig).
-  Retention sizing charges each tool-result artifact reference up to the read cap.
-  Companion content hashes detect equal-length rewrites.
-  A torn final line without a newline is ignored. Empty events and null known event
-  types fail parsing; unknown event types and sibling fields are skipped.
-  Two known event types in one object fail parsing.
-  JSON fields match case-sensitively; unknown object fields are ignored.
-  Other invalid frames fail parsing, preserving the stored session for retry.
-  Malformed, mismatched, duplicate-model, unsupported-version, or unreadable
-  usage is skipped with a log while the transcript imports. Unreadable usage
-  contributes a stable fingerprint marker so restoring access triggers a
-  reparse. Tool results and
-  status attach to calls without separate transcript rows.
+  Retention sizing charges each tool-result artifact reference up to the
+  read cap. Companion content hashes detect equal-length rewrites. A torn
+  final line without a newline is ignored. Empty events and null known event
+  types fail parsing; unknown event types and sibling fields are skipped. Two
+  known event types in one object fail parsing. JSON fields match
+  case-sensitively; unknown object fields are ignored. Other invalid frames
+  fail parsing, preserving the stored session for retry. Malformed,
+  mismatched, duplicate-model, unsupported-version, or unreadable usage is
+  skipped with a log while the transcript imports. Unreadable usage contributes
+  a stable fingerprint marker so restoring access triggers a reparse. Tool
+  results and status attach to calls without separate transcript rows.
 
 ## Muse Code (`muse`)
 
