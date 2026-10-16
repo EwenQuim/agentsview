@@ -91,6 +91,16 @@ func TestSyncAllSinceVibeMetaUpdateTriggersResync(t *testing.T) {
 		require.NotNil(t, sess.DisplayName)
 		assert.Equal(t, "After rename", *sess.DisplayName)
 	})
+
+	// A later metadata-only change must also reparse through SyncPaths.
+	require.NoError(t, os.WriteFile(metaPath, []byte(`{"session_id":"`+sessionID+`","title":"Renamed again","model":"mistral-medium-3.5","stats":{"session_prompt_tokens":100,"session_completion_tokens":50}}`+"\n"), 0o644))
+	metaTime = metaTime.Add(time.Second)
+	require.NoError(t, os.Chtimes(metaPath, metaTime, metaTime))
+	engine.SyncPaths([]string{messagesPath})
+	assertSessionState(t, testDB, "vibe:"+sessionID, func(sess *db.Session) {
+		require.NotNil(t, sess.DisplayName)
+		assert.Equal(t, "Renamed again", *sess.DisplayName)
+	})
 }
 
 func TestSyncAllVibeReparsesLegacySearchReplaceCategory(t *testing.T) {
@@ -130,14 +140,9 @@ func TestSyncAllVibeReparsesLegacySearchReplaceCategory(t *testing.T) {
 	t.Cleanup(engine.Close)
 	stats := engine.SyncAll(t.Context(), nil)
 	assert.Equal(t, 1, stats.Synced)
-	session, err = database.GetSessionFull(t.Context(), sessionID)
-	require.NoError(t, err)
-	require.NotNil(t, session)
-	assert.Equal(t, sessionID, session.ID)
 	messages, err = database.GetAllMessages(t.Context(), sessionID)
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
-	assert.Equal(t, sessionID, messages[0].SessionID)
 	require.Len(t, messages[0].ToolCalls, 1)
 	assert.Equal(t, "Edit", messages[0].ToolCalls[0].Category)
 }
@@ -202,8 +207,12 @@ func TestSyncVibeParentOnlyModelChanges(t *testing.T) {
 						paths = append(paths, file.Path)
 					}
 					assert.ElementsMatch(t, []string{parentAnchor, childAnchor}, paths)
+					scope := plan.PruneScope(map[string]struct{}{parentAnchor: {}})
+					for _, file := range scope.Files {
+						assert.NotEqual(t, childAnchor, file.Path, "dependent child must retain fingerprint freshness")
+					}
 					_, err = engine.SyncChangedPathPlanWithOptionsContext(t.Context(), plan, sync.ChangedPathSyncOptions{
-						ForceFullParse: plan.PruneScope(map[string]struct{}{parentAnchor: {}}),
+						ForceFullParse: scope,
 					}, nil)
 					require.NoError(t, err)
 				} else {

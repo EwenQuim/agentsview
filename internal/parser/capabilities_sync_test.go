@@ -156,6 +156,10 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 			FingerprintHashInCacheKey:           true,
 			FingerprintHashRequiredForFreshness: true,
 		},
+		AgentVibe: {
+			FingerprintHashInCacheKey:           true,
+			FingerprintHashRequiredForFreshness: true,
+		},
 		// Grok companion edits can keep the summary's size and mtime, so
 		// freshness depends on the content fingerprint.
 		AgentGrok: {
@@ -166,9 +170,6 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 
 	for _, factory := range ProviderFactories() {
 		agent := factory.Definition().Type
-		if agent == AgentVibe {
-			continue
-		}
 		t.Run(string(agent), func(t *testing.T) {
 			// The behavior-only fields are excluded from this declaration
 			// comparison; see the Hermes/Augure Desktop comment above.

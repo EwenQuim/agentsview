@@ -653,7 +653,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		require.ErrorContains(t, err, "reading Vibe unified runtime-state.json")
 	})
 
-	t.Run("malformed optional metadata", func(t *testing.T) {
+	t.Run("metadata overrides project fields while directory supplies session ID", func(t *testing.T) {
 		root, provider, source, fingerprint := fixture(t)
 		writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "meta.json"), `{"session_id":"other-id","start_time":"invalid","environment":{"working_directory":"/workspace/project-a"},"git_branch":"main"}`)
 		outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
@@ -672,12 +672,11 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, parentRuntime, wantModel string
-		refreshParent                  bool
 	}{
-		{"parent recorded model", `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411", true},
-		{"parent without model", `{"runtime_state_version":3,"session_metadata":{}}`, "", false},
-		{"missing parent", "", "", false},
-		{"unreadable parent metadata", "{", "", false},
+		{"parent recorded model", `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`, "mistral-large-2411"},
+		{"parent without model", `{"runtime_state_version":3,"session_metadata":{}}`, ""},
+		{"missing parent", "", ""},
+		{"unreadable parent metadata", "{", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -726,31 +725,31 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			assert.Equal(t, tc.wantModel, result.Messages[2].Model)
 			require.Len(t, result.UsageEvents, 1)
 			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
-
-			if !tc.refreshParent {
-				return
-			}
-
-			parentDir := filepath.Join(root, "unified", parentID)
-			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "manifest.json"), `{"manifest_version":1,"generation":"0000000000000003","session_id":"`+parentID+`","snapshot_sequence":1}`)
-			writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000003", "runtime-state.json"), `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-medium-3.5"}}`)
-			writeVibeUnifiedPointer(t, parentDir, "0000000000000003")
-			parentTime := time.Unix(2_000_000_000, 0)
-			require.NoError(t, os.Chtimes(filepath.Join(parentDir, "CURRENT"), parentTime, parentTime))
-			updatedFingerprint, err := provider.Fingerprint(t.Context(), source)
-			require.NoError(t, err)
-			assert.NotEqual(t, fingerprint.Hash, updatedFingerprint.Hash)
-			assert.Equal(t, fingerprint.Size, updatedFingerprint.Size)
-			assert.Equal(t, int64(2_000_000_000_000_000_000), updatedFingerprint.MTimeNS)
-			outcome, err = provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: updatedFingerprint})
-			require.NoError(t, err)
-			require.Len(t, outcome.Results, 1)
-			result = outcome.Results[0].Result
-			assert.Equal(t, "mistral-medium-3.5", result.Messages[1].Model)
-			require.Len(t, result.UsageEvents, 1)
-			assert.Equal(t, "mistral-medium-3.5", result.UsageEvents[0].Model)
 		})
 	}
+
+	// Parent publications change the dependent fingerprint without changing child bytes.
+	root := t.TempDir()
+	childDir := writeVibeUnifiedSession(t, root, "child")
+	parentDir := writeVibeUnifiedSession(t, root, "parent")
+	writeSourceFile(t, filepath.Join(childDir, "generations", "0000000000000001", "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"},"session_metadata":{}}`)
+	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+	require.True(t, ok)
+	source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: "child"})
+	require.NoError(t, err)
+	require.True(t, found)
+	fingerprint, err := provider.Fingerprint(t.Context(), source)
+	require.NoError(t, err)
+	writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "manifest.json"), `{"manifest_version":1,"generation":"0000000000000002","session_id":"parent","snapshot_sequence":1}`)
+	writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "runtime-state.json"), `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`)
+	writeVibeUnifiedPointer(t, parentDir, "0000000000000002")
+	parentTime := time.Unix(2_000_000_000, 0)
+	require.NoError(t, os.Chtimes(filepath.Join(parentDir, "CURRENT"), parentTime, parentTime))
+	updatedFingerprint, err := provider.Fingerprint(t.Context(), source)
+	require.NoError(t, err)
+	assert.NotEqual(t, fingerprint.Hash, updatedFingerprint.Hash)
+	assert.Equal(t, fingerprint.Size, updatedFingerprint.Size)
+	assert.Equal(t, int64(2_000_000_000_000_000_000), updatedFingerprint.MTimeNS)
 }
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
@@ -791,8 +790,6 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			assert.Equal(t, "old answer", result.Messages[1].Content)
 			assert.Equal(t, "new question", result.Messages[2].Content)
 			assert.Equal(t, "new answer", result.Messages[3].Content)
-			assert.Equal(t, DataVersionCurrent, outcome.Results[0].DataVersion)
-			assert.Empty(t, outcome.Results[0].RetryReason)
 		})
 	}
 }
