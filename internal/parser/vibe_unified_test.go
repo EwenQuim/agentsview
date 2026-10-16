@@ -37,7 +37,7 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 			`"start_time":"2026-09-28T13:23:23.600000+00:00",`+
 			`"end_time":"2026-09-28T13:32:53.039000+00:00",`+
 			`"git_commit":null,"git_branch":null,"title":null,`+
-			`"environment":{"working_directory":"/Users/dev/work/my-repo"}}`)
+			`"environment":{"working_directory":"/workspace/my-repo"}}`)
 	genDir := filepath.Join(sessionDir, "generations", gen)
 	writeSourceFile(t, filepath.Join(genDir, "manifest.json"),
 		`{"generation":"`+gen+`","session_id":"`+sessionID+`",`+
@@ -56,7 +56,7 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 		`{"runtime_state_version":3,"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
 			`"root_session_id":"`+sessionID+`","session_id":"`+sessionID+`"},`+
 			`"session_metadata":{"active_model":"mistral-medium-3.5",`+
-			`"cwd":"/Users/dev/work/my-repo"}}`)
+			`"cwd":"/workspace/my-repo"}}`)
 	return sessionDir
 }
 
@@ -222,7 +222,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	assert.Equal(t, AgentVibe, result.Result.Session.Agent)
 	assert.Equal(t, "devbox", result.Result.Session.Machine)
 	assert.Equal(t, "my_repo", result.Result.Session.Project)
-	assert.Equal(t, "/Users/dev/work/my-repo", result.Result.Session.Cwd)
+	assert.Equal(t, "/workspace/my-repo", result.Result.Session.Cwd)
 	assert.Equal(t, "unified question", result.Result.Session.FirstMessage)
 	assert.Equal(t, 1450, result.Result.Session.PeakContextTokens)
 	assert.True(t, result.Result.Session.HasPeakContextTokens)
@@ -629,7 +629,7 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 					`"parent_session_id":"`+parentID+`",`+
 					`"root_session_id":"`+parentID+`","session_id":"`+childID+`"},`+
 					`"session_metadata":{`+
-					`"cwd":"/Users/dev/work/my-repo"}}`)
+					`"cwd":"/workspace/my-repo"}}`)
 
 			if tc.parentRuntime != "" {
 				parentDir := writeVibeUnifiedSession(t, root, parentID)
