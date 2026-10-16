@@ -575,7 +575,7 @@ func (e *Engine) filterQuickSyncFiles(
 		if found && !pageFailed && f.ProviderSource != nil &&
 			!e.forceParseRequested(f) && e.pathRewriter == nil && e.sqliteContainerPassCaptureValid(dbPath) {
 			fingerprint, complete := parser.OpenCodeCompositeFingerprint(*f.ProviderSource)
-			if row.Suppressed || (complete && fingerprint.MTimeNS != 0 && providerFingerprintMatchesStored(f.Agent, f.Path, fingerprint, 0, row.CoveredThroughNS, row.FingerprintHash, true)) {
+			if row.Suppressed || (complete && fingerprint.MTimeNS != 0 && providerFingerprintMatchesStored(f.Agent, fingerprint, 0, row.CoveredThroughNS, row.FingerprintHash, true)) {
 				e.noteSQLiteContainerResult(f.Path, true)
 				continue
 			}

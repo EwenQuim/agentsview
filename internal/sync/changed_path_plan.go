@@ -177,8 +177,8 @@ func (e *Engine) planOneChangedPath(
 				providerUnproven = true
 				continue
 			}
-			if agent == parser.AgentOmnigent || agent == parser.AgentVibe {
-				sources, sourceErr = e.expandInheritedMetadataSources(
+			if agent == parser.AgentOmnigent {
+				sources, sourceErr = e.expandOmnigentInheritedMetadataSources(
 					ctx, provider, sources,
 				)
 				if errors.Is(sourceErr, context.Canceled) ||
@@ -523,12 +523,7 @@ func (plan *ChangedPathPlan) PruneScope(
 		if _, armed := armedPhysicalPaths[filepath.Clean(path)]; !armed {
 			continue
 		}
-		for _, file := range attribution.files {
-			if vibeDependentSourceForEvent(file.Agent, file.Path, path) {
-				continue
-			}
-			files = append(files, file)
-		}
+		files = append(files, attribution.files...)
 		providers = append(providers, attribution.fallbackProviders...)
 	}
 	files = sortAndDedupeChangedPathFiles(files)

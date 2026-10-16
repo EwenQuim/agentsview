@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/jsontext"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,28 +25,50 @@ import (
 //
 //	CURRENT                      pointer to the newest generation
 //	meta.json                    session metadata (absent for subagents)
-//	journal/<seq>.jsonl          recovery journal (not parsed here)
+//	journal/<seq>.jsonl          records appended since that generation
 //	chunks/<sha256>.json         content-addressed entry chunks
 //	generations/<seq>/           snapshots, pruned to the newest two
-//	  manifest.json              lists the projection and checkpoint chunks
+//	  manifest.json              lists the projection chunks and journal segment
 //	  projection-state.json      session envelope with aggregate token usage
 //	  runtime-state.json         runtime metadata (active model, cwd)
 //
-// The public transcript is the projection chunks listed by the newest
-// generation's manifest, in listed order; each chunk is a JSON array of
-// harness public-session-state entries (message, reasoning, effect, notice,
-// checkpoint).
+// The public transcript is the newest generation's projection, whose entries
+// live in the chunks its manifest lists, advanced by the projection records
+// in that generation's journal segment. The producer journals each durable
+// projection change and folds the journal into a new generation only when
+// the session settles, so a running turn exists only in the journal. Each
+// chunk is a JSON array of harness public-session-state entries (message,
+// reasoning, effect, notice, checkpoint).
+
+const vibeUnifiedStoreFormat = "mistral.vibe.unified-session-store/v1"
+
+var (
+	vibeUnifiedSHA256         = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	vibeUnifiedJournalSegment = regexp.MustCompile(`^journal/[0-9]{16}\.jsonl$`)
+)
 
 type vibeUnifiedCurrent struct {
 	Generation       string `json:"generation"`
 	StoreFormat      string `json:"store_format"`
 	StoreFormatMinor int    `json:"store_format_minor"`
+	ManifestSHA256   string `json:"manifest_sha256"`
 }
 
 type vibeUnifiedManifest struct {
 	ProjectionState struct {
 		Chunks []string `json:"chunks"`
 	} `json:"projection_state"`
+	RecoveryJournalSegment struct {
+		Path          string `json:"path"`
+		FirstSequence int64  `json:"first_sequence"`
+	} `json:"recovery_journal_segment"`
+}
+
+// vibeUnifiedGeneration is the generation a session's CURRENT publishes.
+type vibeUnifiedGeneration struct {
+	sessionDir string
+	dir        string
+	manifest   vibeUnifiedManifest
 }
 
 type vibeUnifiedTokenUsage struct {
@@ -60,13 +85,15 @@ type vibeUnifiedProjectionSession struct {
 	ContextUsage vibeUnifiedTokenUsage `json:"contextUsage"`
 }
 
+type vibeUnifiedSnapshot struct {
+	Session vibeUnifiedProjectionSession `json:"session"`
+	History struct {
+		Entries []vibeUnifiedEntry `json:"entries"`
+	} `json:"history"`
+}
+
 type vibeUnifiedProjectionState struct {
-	Snapshot struct {
-		Session vibeUnifiedProjectionSession `json:"session"`
-		History struct {
-			Entries []vibeUnifiedEntry `json:"entries"`
-		} `json:"history"`
-	} `json:"snapshot"`
+	Snapshot vibeUnifiedSnapshot `json:"snapshot"`
 }
 
 // vibeUnifiedRuntimeMetadata carries the identity-bearing fields of
@@ -121,7 +148,8 @@ type vibeUnifiedEffectState struct {
 }
 
 type vibeUnifiedEffectOutput struct {
-	Content jsontext.Value `json:"content,omitempty"`
+	Content           jsontext.Value `json:"content,omitempty"`
+	StructuredContent jsontext.Value `json:"structured_content,omitempty"`
 }
 
 // vibeIsUnifiedAnchor reports whether path is the CURRENT anchor of a unified
@@ -139,32 +167,252 @@ func VibeUnifiedSessionID(path string) (string, bool) {
 	return "vibe:" + filepath.Base(filepath.Dir(path)), true
 }
 
-// vibeUnifiedSessionDirFromRel maps CURRENT and meta.json to their session directory.
+// vibeUnifiedSessionDirFromRel maps CURRENT, meta.json, and journal segments
+// to their session directory.
 func vibeUnifiedSessionDirFromRel(rel, root string) (string, bool) {
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 3 || parts[0] != "unified" || (parts[2] != "CURRENT" && parts[2] != "meta.json") {
+	if len(parts) < 3 || parts[0] != "unified" {
+		return "", false
+	}
+	inner := strings.Join(parts[2:], "/")
+	if inner != "CURRENT" && inner != "meta.json" && !vibeUnifiedJournalSegment.MatchString(inner) {
 		return "", false
 	}
 	return filepath.Join(filepath.Clean(root), "unified", parts[1]), true
 }
 
-// vibeUnifiedGenerationDir resolves the generation named by CURRENT.
-func vibeUnifiedGenerationDir(sessionDir string) (string, error) {
+// loadVibeUnifiedGeneration resolves the generation CURRENT names and reads
+// its manifest, which CURRENT pins by digest.
+func loadVibeUnifiedGeneration(sessionDir string) (vibeUnifiedGeneration, error) {
 	raw, err := os.ReadFile(filepath.Join(sessionDir, "CURRENT"))
 	if err != nil {
-		return "", fmt.Errorf("reading Vibe unified CURRENT: %w", err)
+		return vibeUnifiedGeneration{}, fmt.Errorf("reading Vibe unified CURRENT: %w", err)
 	}
-	current := vibeUnifiedCurrent{StoreFormat: "mistral.vibe.unified-session-store/v1", StoreFormatMinor: 1}
+	current := vibeUnifiedCurrent{StoreFormat: vibeUnifiedStoreFormat, StoreFormatMinor: 1}
 	if err := json.Unmarshal(raw, &current); err != nil {
-		return "", fmt.Errorf("parsing Vibe unified CURRENT: %w", err)
+		return vibeUnifiedGeneration{}, fmt.Errorf("parsing Vibe unified CURRENT: %w", err)
 	}
-	if current.StoreFormat != "mistral.vibe.unified-session-store/v1" || current.StoreFormatMinor < 1 || current.StoreFormatMinor > 8 {
-		return "", fmt.Errorf("%w: store %s minor %d", errVibeUnsupportedVersion, current.StoreFormat, current.StoreFormatMinor)
+	if current.StoreFormat != vibeUnifiedStoreFormat || current.StoreFormatMinor < 1 || current.StoreFormatMinor > 8 {
+		return vibeUnifiedGeneration{}, fmt.Errorf("%w: store %s minor %d", errVibeUnsupportedVersion, current.StoreFormat, current.StoreFormatMinor)
 	}
 	if !isSafeSinglePathComponent(current.Generation) {
-		return "", errors.New("invalid generation in Vibe unified CURRENT")
+		return vibeUnifiedGeneration{}, errors.New("invalid generation in Vibe unified CURRENT")
 	}
-	return filepath.Join(sessionDir, "generations", current.Generation), nil
+	gen := vibeUnifiedGeneration{
+		sessionDir: sessionDir,
+		dir:        filepath.Join(sessionDir, "generations", current.Generation),
+	}
+	raw, err = os.ReadFile(filepath.Join(gen.dir, "manifest.json"))
+	if err != nil {
+		return vibeUnifiedGeneration{}, fmt.Errorf("reading Vibe unified manifest.json: %w", err)
+	}
+	// Stored documents end in a newline that their digest excludes.
+	digest := sha256.Sum256(bytes.TrimSuffix(raw, []byte("\n")))
+	if hex.EncodeToString(digest[:]) != current.ManifestSHA256 {
+		return vibeUnifiedGeneration{}, errors.New("manifest digest does not match Vibe unified CURRENT")
+	}
+	if err := decodeVibeUnifiedDoc("manifest.json", raw, &gen.manifest); err != nil {
+		return vibeUnifiedGeneration{}, err
+	}
+	return gen, nil
+}
+
+// chunkPaths lists the projection chunks in transcript order. Chunk names are
+// SHA-256 digests, so they cannot leave the chunk pool.
+func (g vibeUnifiedGeneration) chunkPaths() ([]string, error) {
+	paths := make([]string, 0, len(g.manifest.ProjectionState.Chunks))
+	for _, chunk := range g.manifest.ProjectionState.Chunks {
+		if !vibeUnifiedSHA256.MatchString(chunk) {
+			return nil, fmt.Errorf("invalid Vibe unified chunk hash %q", chunk)
+		}
+		paths = append(paths, filepath.Join(g.sessionDir, "chunks", chunk+".json"))
+	}
+	return paths, nil
+}
+
+// journalPath returns the journal segment that extends the generation.
+func (g vibeUnifiedGeneration) journalPath() (string, error) {
+	path := g.manifest.RecoveryJournalSegment.Path
+	if path == "" {
+		return "", nil
+	}
+	if !vibeUnifiedJournalSegment.MatchString(path) {
+		return "", fmt.Errorf("invalid Vibe unified journal segment %q", path)
+	}
+	return filepath.Join(g.sessionDir, filepath.FromSlash(path)), nil
+}
+
+// snapshot returns the generation's projection advanced by its journal.
+func (g vibeUnifiedGeneration) snapshot() (vibeUnifiedSnapshot, error) {
+	var projection vibeUnifiedProjectionState
+	if err := readVibeUnifiedDoc(g.dir, "projection-state.json", &projection); err != nil {
+		return vibeUnifiedSnapshot{}, err
+	}
+	snapshot := projection.Snapshot
+	// A null chunk list keeps the transcript inline, as before chunk pooling.
+	if g.manifest.ProjectionState.Chunks != nil {
+		paths, err := g.chunkPaths()
+		if err != nil {
+			return vibeUnifiedSnapshot{}, err
+		}
+		snapshot.History.Entries = nil
+		for _, path := range paths {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return vibeUnifiedSnapshot{}, fmt.Errorf("reading Vibe unified chunk: %w", err)
+			}
+			var entries []vibeUnifiedEntry
+			if err := json.Unmarshal(raw, &entries); err != nil {
+				return vibeUnifiedSnapshot{}, fmt.Errorf("parsing Vibe unified chunk %s: %w", filepath.Base(path), err)
+			}
+			snapshot.History.Entries = append(snapshot.History.Entries, entries...)
+		}
+	}
+	journal, err := g.journalPath()
+	if err != nil || journal == "" {
+		return snapshot, err
+	}
+	err = replayVibeUnifiedJournal(journal, g.manifest.RecoveryJournalSegment.FirstSequence, &snapshot)
+	return snapshot, err
+}
+
+// VibeUnifiedJournalPath returns the journal segment that extends the
+// generation a unified anchor publishes.
+func VibeUnifiedJournalPath(anchor string) (string, bool) {
+	if !vibeIsUnifiedAnchor(anchor) {
+		return "", false
+	}
+	gen, err := loadVibeUnifiedGeneration(filepath.Dir(anchor))
+	if err != nil {
+		return "", false
+	}
+	path, err := gen.journalPath()
+	return path, err == nil && path != ""
+}
+
+type vibeUnifiedJournalRecord struct {
+	Version  int            `json:"recovery_journal_record_version"`
+	Sequence int64          `json:"sequence"`
+	Type     string         `json:"type"`
+	Previous *string        `json:"previous_record_sha256"`
+	Digest   string         `json:"record_sha256"`
+	Payload  jsontext.Value `json:"payload"`
+}
+
+type vibeUnifiedProjectionOp struct {
+	Op      string              `json:"op"`
+	ID      string              `json:"id"`
+	Entry   vibeUnifiedEntry    `json:"entry"`
+	Entries []vibeUnifiedEntry  `json:"entries"`
+	State   vibeUnifiedSnapshot `json:"state"`
+}
+
+var vibeUnifiedRecordDigestField = []byte(`,"record_sha256":"`)
+
+// replayVibeUnifiedJournal applies a journal segment's projection records to
+// snapshot. Records chain by digest from the segment's first sequence, and a
+// final record without its newline is an append still in progress.
+func replayVibeUnifiedJournal(path string, sequence int64, snapshot *vibeUnifiedSnapshot) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading Vibe unified journal: %w", err)
+	}
+	previous := ""
+	for {
+		end := bytes.IndexByte(data, '\n')
+		if end < 0 {
+			return nil
+		}
+		line := data[:end]
+		data = data[end+1:]
+		var record vibeUnifiedJournalRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return fmt.Errorf("parsing Vibe unified journal record %d: %w", sequence, err)
+		}
+		if record.Version != 1 {
+			return fmt.Errorf("%w: journal record version %d", errVibeUnsupportedVersion, record.Version)
+		}
+		if record.Sequence != sequence || (record.Previous == nil) != (previous == "") ||
+			(record.Previous != nil && *record.Previous != previous) ||
+			vibeUnifiedRecordDigest(line) != record.Digest {
+			return fmt.Errorf("vibe unified journal record %d breaks the digest chain", sequence)
+		}
+		if err := applyVibeUnifiedJournalRecord(record, snapshot); err != nil {
+			return fmt.Errorf("applying Vibe unified journal record %d: %w", sequence, err)
+		}
+		previous = record.Digest
+		sequence++
+	}
+}
+
+// vibeUnifiedRecordDigest recomputes a journal record's digest, which covers
+// the record without its own record_sha256 member.
+func vibeUnifiedRecordDigest(line []byte) string {
+	start := bytes.LastIndex(line, vibeUnifiedRecordDigestField)
+	end := start + len(vibeUnifiedRecordDigestField) + 2*sha256.Size
+	if start < 0 || end >= len(line) || line[end] != '"' {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(line[:start])
+	_, _ = hash.Write(line[end+1:])
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// applyVibeUnifiedJournalRecord folds one projection record into snapshot.
+// Records for runtime state do not touch the transcript.
+func applyVibeUnifiedJournalRecord(record vibeUnifiedJournalRecord, snapshot *vibeUnifiedSnapshot) error {
+	switch record.Type {
+	case "projection_advanced":
+		var payload struct {
+			Snapshot vibeUnifiedSnapshot `json:"snapshot"`
+		}
+		if err := json.Unmarshal(record.Payload, &payload); err != nil {
+			return err
+		}
+		*snapshot = payload.Snapshot
+	case "projection_delta":
+		var payload struct {
+			Delta []vibeUnifiedProjectionOp `json:"delta"`
+		}
+		if err := json.Unmarshal(record.Payload, &payload); err != nil {
+			return err
+		}
+		for _, op := range payload.Delta {
+			if err := op.apply(snapshot); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (op vibeUnifiedProjectionOp) apply(snapshot *vibeUnifiedSnapshot) error {
+	entries := snapshot.History.Entries
+	matches := func(entry vibeUnifiedEntry) bool { return entry.ID == op.ID }
+	switch op.Op {
+	case "append_entry":
+		entries = append(entries, op.Entry)
+	case "replace_entry":
+		i := slices.IndexFunc(entries, matches)
+		if i < 0 {
+			return fmt.Errorf("replace_entry names absent entry %q", op.ID)
+		}
+		entries[i] = op.Entry
+	case "remove_entry":
+		count := len(entries)
+		if entries = slices.DeleteFunc(entries, matches); len(entries) == count {
+			return fmt.Errorf("remove_entry names absent entry %q", op.ID)
+		}
+	case "set_history_entries":
+		entries = op.Entries
+	case "set_envelope":
+		snapshot.Session = op.State.Session
+	default:
+		return fmt.Errorf("%w: projection op %q", errVibeUnsupportedVersion, op.Op)
+	}
+	snapshot.History.Entries = entries
+	return nil
 }
 
 // parseVibeUnifiedResultFile parses a unified harness session directory,
@@ -184,21 +432,15 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 		},
 	}
 
-	genDir, err := vibeUnifiedGenerationDir(sessionDir)
+	gen, err := loadVibeUnifiedGeneration(sessionDir)
 	if err != nil {
 		return result, err
 	}
-
-	var manifest vibeUnifiedManifest
-	if err := readVibeUnifiedDoc(genDir, "manifest.json", &manifest); err != nil {
+	snapshot, err := gen.snapshot()
+	if err != nil {
 		return result, err
 	}
-
-	var projection vibeUnifiedProjectionState
-	if err := readVibeUnifiedDoc(genDir, "projection-state.json", &projection); err != nil {
-		return result, err
-	}
-	projSession := projection.Snapshot.Session
+	projSession := snapshot.Session
 
 	_, _, _, err = applyVibeMetadata(&result, sessionDir)
 	if err != nil {
@@ -209,7 +451,7 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	var parentID string
 
 	var runtimeMeta vibeUnifiedRuntimeMetadata
-	if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
+	if err := readVibeUnifiedDoc(gen.dir, "runtime-state.json", &runtimeMeta); err != nil {
 		return result, err
 	}
 	if result.Session.Cwd == "" {
@@ -262,16 +504,12 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	}
 	sessionModel := runtimeMeta.SessionMetadata.ActiveModel
 	if sessionModel == "" {
-		sessionModel, _, err = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+		sessionModel, err = vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
 		if err != nil {
 			return result, err
 		}
 	}
-	messages, err := parseVibeUnifiedChunks(sessionDir, manifest.ProjectionState.Chunks, projection.Snapshot.History.Entries, sessionModel)
-	if err != nil {
-		return result, err
-	}
-	result.Messages = messages
+	result.Messages = vibeUnifiedMessages(snapshot.History.Entries, sessionModel)
 	setVibeMessageMetadata(&result)
 
 	stats := VibeStats{
@@ -287,25 +525,8 @@ func parseVibeUnifiedResultFile(anchorPath string, fileInfo FileInfo) (ParseResu
 	return result, nil
 }
 
-// parseVibeUnifiedChunks uses inline history unless the manifest names a chunk list.
-func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []vibeUnifiedEntry, model string) ([]ParsedMessage, error) {
-	if chunkHashes != nil {
-		entries = nil
-		for _, chunkHash := range chunkHashes {
-			if !isSafeSinglePathComponent(chunkHash) {
-				return nil, fmt.Errorf("invalid Vibe unified chunk hash %q", chunkHash)
-			}
-			raw, err := os.ReadFile(filepath.Join(sessionDir, "chunks", chunkHash+".json"))
-			if err != nil {
-				return nil, fmt.Errorf("reading Vibe unified chunk %s: %w", chunkHash, err)
-			}
-			var chunkEntries []vibeUnifiedEntry
-			if err := json.Unmarshal(raw, &chunkEntries); err != nil {
-				return nil, fmt.Errorf("parsing Vibe unified chunk %s: %w", chunkHash, err)
-			}
-			entries = append(entries, chunkEntries...)
-		}
-	}
+// vibeUnifiedMessages converts public history entries into messages.
+func vibeUnifiedMessages(entries []vibeUnifiedEntry, model string) []ParsedMessage {
 	var messages []ParsedMessage
 	var thinking, thinkingTurn string
 	var thinkingCreatedAt int64
@@ -360,7 +581,7 @@ func parseVibeUnifiedChunks(sessionDir string, chunkHashes []string, entries []v
 		}
 	}
 	flushThinking()
-	return messages, nil
+	return messages
 }
 
 // vibeUnifiedEntryMessage converts a public message entry.
@@ -456,8 +677,11 @@ func vibeUnifiedEffectMessages(entry vibeUnifiedEntry, ordinal int) *ParsedMessa
 
 	resultText := ""
 	if entry.State != nil {
-		if entry.State.Output != nil {
-			resultText = vibeUnifiedToolResultContent(gjson.Parse(string(entry.State.Output.Content)))
+		if output := entry.State.Output; output != nil {
+			resultText = firstNonEmptyJSONLString(
+				vibeUnifiedToolResultContent(gjson.Parse(string(output.Content))),
+				vibeUnifiedStructuredResult(output.StructuredContent),
+			)
 		}
 		resultText = firstNonEmptyJSONLString(resultText, entry.State.OutputText, entry.State.Reason, entry.State.Error.Message)
 		status := entry.State.Status
@@ -486,6 +710,10 @@ func readVibeUnifiedDoc(genDir, name string, v any) error {
 	if err != nil {
 		return fmt.Errorf("reading Vibe unified %s: %w", name, err)
 	}
+	return decodeVibeUnifiedDoc(name, raw, v)
+}
+
+func decodeVibeUnifiedDoc(name string, raw []byte, v any) error {
 	versions := struct {
 		Manifest   int `json:"manifest_version"`
 		Projection int `json:"projection_state_version"`
@@ -529,33 +757,104 @@ func vibeUnifiedToolResultContent(content gjson.Result) string {
 	return string(encoded)
 }
 
-func vibeUnifiedParentModel(sessionDir, parentID string) (string, int64, error) {
-	if !isSafeSinglePathComponent(parentID) {
-		return "", 0, nil
-	}
-	parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
-	parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
-	if err != nil {
-		if errors.Is(err, errVibeUnsupportedVersion) {
-			return "", 0, err
+// vibeUnifiedStructuredResult renders structured_content, the only output of
+// builtin tools. bash reports stdout and stderr, read_file the file text, and
+// other tools a small JSON object that is kept as written.
+func vibeUnifiedStructuredResult(raw jsontext.Value) string {
+	value := gjson.ParseBytes(raw)
+	switch {
+	case value.Type == gjson.String:
+		return value.Str
+	case !value.IsObject():
+		if value.Type == gjson.Null {
+			return ""
 		}
-		return "", 0, nil
+		return value.Raw
 	}
-	var parentMeta vibeUnifiedRuntimeMetadata
-	if err := readVibeUnifiedDoc(parentGenDir, "runtime-state.json", &parentMeta); err != nil {
-		if errors.Is(err, errVibeUnsupportedVersion) {
-			return "", 0, err
+	stdout, stderr := value.Get("stdout"), value.Get("stderr")
+	if stdout.Type == gjson.String || stderr.Type == gjson.String {
+		text := stdout.Str
+		if stderr.Str != "" && text != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
 		}
-		return "", 0, nil
+		return text + stderr.Str
 	}
-	info, err := os.Stat(filepath.Join(parentDir, "CURRENT"))
-	if err != nil {
-		return "", 0, fmt.Errorf("stat Vibe unified parent CURRENT: %w", err)
+	if content := value.Get("content"); content.Type == gjson.String {
+		return content.Str
 	}
-	return parentMeta.SessionMetadata.ActiveModel, info.ModTime().UnixNano(), nil
+	return value.Raw
 }
 
-// CURRENT pins the manifest and its documents by digest; inherited models can change independently.
+// vibeUnifiedParentModel reads the model a subagent's direct parent pins.
+// Subagents record no model of their own and run on their parent's, so the
+// model is resolved when the subagent itself is parsed and kept afterward.
+func vibeUnifiedParentModel(sessionDir, parentID string) (string, error) {
+	if !isSafeSinglePathComponent(parentID) {
+		return "", nil
+	}
+	parent, err := loadVibeUnifiedGeneration(filepath.Join(filepath.Dir(sessionDir), parentID))
+	if err == nil {
+		var parentMeta vibeUnifiedRuntimeMetadata
+		if err = readVibeUnifiedDoc(parent.dir, "runtime-state.json", &parentMeta); err == nil {
+			return parentMeta.SessionMetadata.ActiveModel, nil
+		}
+	}
+	if errors.Is(err, errVibeUnsupportedVersion) {
+		return "", err
+	}
+	return "", nil
+}
+
+// vibeUnifiedParseInputs lists every file a parse of the session reads.
+func vibeUnifiedParseInputs(sessionDir string) ([]string, error) {
+	gen, err := loadVibeUnifiedGeneration(sessionDir)
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{
+		filepath.Join(sessionDir, "CURRENT"),
+		filepath.Join(sessionDir, "meta.json"),
+		filepath.Join(gen.dir, "manifest.json"),
+		filepath.Join(gen.dir, "projection-state.json"),
+		filepath.Join(gen.dir, "runtime-state.json"),
+	}
+	chunks, err := gen.chunkPaths()
+	if err != nil {
+		return nil, err
+	}
+	paths = append(paths, chunks...)
+	journal, err := gen.journalPath()
+	if err != nil {
+		return nil, err
+	}
+	if journal != "" {
+		paths = append(paths, journal)
+	}
+	var runtimeMeta vibeUnifiedRuntimeMetadata
+	if err := readVibeUnifiedDoc(gen.dir, "runtime-state.json", &runtimeMeta); err != nil {
+		return nil, err
+	}
+	if parentID := runtimeMeta.Identity.ParentSessionID; runtimeMeta.SessionMetadata.ActiveModel == "" && isSafeSinglePathComponent(parentID) {
+		parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
+		parent, err := loadVibeUnifiedGeneration(parentDir)
+		if errors.Is(err, errVibeUnsupportedVersion) {
+			return nil, err
+		}
+		if err == nil {
+			paths = append(paths,
+				filepath.Join(parentDir, "CURRENT"),
+				filepath.Join(parent.dir, "manifest.json"),
+				filepath.Join(parent.dir, "runtime-state.json"),
+			)
+		}
+	}
+	return paths, nil
+}
+
+// vibeUnifiedFingerprint covers each input that changes in place. CURRENT
+// pins the generation documents by digest, meta.json is rewritten, and the
+// journal segment grows by appends. The journal can reach tens of megabytes,
+// so it contributes its size and mtime rather than a content hash.
 func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 	var size, mtime int64
 	hash := sha256.New()
@@ -576,21 +875,22 @@ func vibeUnifiedFingerprint(sessionDir string) (SourceFingerprint, error) {
 			return SourceFingerprint{}, err
 		}
 	}
-	genDir, err := vibeUnifiedGenerationDir(sessionDir)
+	gen, err := loadVibeUnifiedGeneration(sessionDir)
 	if err != nil {
 		return SourceFingerprint{}, err
 	}
-	var runtimeMeta vibeUnifiedRuntimeMetadata
-	if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
+	journal, err := gen.journalPath()
+	if err != nil {
 		return SourceFingerprint{}, err
 	}
-	if runtimeMeta.SessionMetadata.ActiveModel == "" {
-		parentModel, parentMtime, err := vibeUnifiedParentModel(sessionDir, runtimeMeta.Identity.ParentSessionID)
+	if journal != "" {
+		info, err := os.Stat(journal)
 		if err != nil {
 			return SourceFingerprint{}, err
 		}
-		_, _ = fmt.Fprintf(hash, "parent-model:%s\n", parentModel)
-		mtime = max(mtime, parentMtime)
+		size += info.Size()
+		mtime = max(mtime, info.ModTime().UnixNano())
+		_, _ = fmt.Fprintf(hash, "journal:%s:%d:%d\n", filepath.Base(journal), info.Size(), info.ModTime().UnixNano())
 	}
 	return SourceFingerprint{Size: size, MTimeNS: mtime, Hash: hex.EncodeToString(hash.Sum(nil))}, nil
 }

@@ -34,7 +34,7 @@ func TestVibeProviderSourceMethods(t *testing.T) {
 	assert.Equal(t, root, plan.Roots[0].Path)
 	assert.True(t, plan.Roots[0].Recursive)
 	assert.Equal(t, []string{
-		"messages.jsonl", "meta.json", "CURRENT",
+		"messages.jsonl", "meta.json", "CURRENT", "[0-9]*.jsonl",
 	}, plan.Roots[0].IncludeGlobs)
 
 	discovered, err := provider.Discover(t.Context())

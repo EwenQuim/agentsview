@@ -50,34 +50,9 @@ func (p *vibeProvider) ParseSourceSize(ctx context.Context, source SourceRef) (i
 	sessionDir := filepath.Dir(src.Path)
 	paths := []string{src.Path, filepath.Join(sessionDir, "meta.json")}
 	if _, unified := VibeUnifiedSessionID(src.Path); unified {
-		genDir, err := vibeUnifiedGenerationDir(sessionDir)
-		if err != nil {
+		var err error
+		if paths, err = vibeUnifiedParseInputs(sessionDir); err != nil {
 			return 0, err
-		}
-		var manifest vibeUnifiedManifest
-		if err := readVibeUnifiedDoc(genDir, "manifest.json", &manifest); err != nil {
-			return 0, err
-		}
-		var runtimeMeta vibeUnifiedRuntimeMetadata
-		if err := readVibeUnifiedDoc(genDir, "runtime-state.json", &runtimeMeta); err != nil {
-			return 0, err
-		}
-		paths = append(paths, filepath.Join(genDir, "manifest.json"), filepath.Join(genDir, "projection-state.json"), filepath.Join(genDir, "runtime-state.json"))
-		for _, chunk := range manifest.ProjectionState.Chunks {
-			if !isSafeSinglePathComponent(chunk) {
-				return 0, fmt.Errorf("invalid Vibe unified chunk hash %q", chunk)
-			}
-			paths = append(paths, filepath.Join(sessionDir, "chunks", chunk+".json"))
-		}
-		if parentID := runtimeMeta.Identity.ParentSessionID; runtimeMeta.SessionMetadata.ActiveModel == "" && isSafeSinglePathComponent(parentID) {
-			parentDir := filepath.Join(filepath.Dir(sessionDir), parentID)
-			parentGenDir, err := vibeUnifiedGenerationDir(parentDir)
-			if errors.Is(err, errVibeUnsupportedVersion) {
-				return 0, err
-			}
-			if err == nil {
-				paths = append(paths, filepath.Join(parentDir, "CURRENT"), filepath.Join(parentGenDir, "runtime-state.json"))
-			}
 		}
 	}
 	var size int64
@@ -99,7 +74,10 @@ func (p *vibeProvider) ParseSourceSize(ctx context.Context, source SourceRef) (i
 
 type vibeSourceSet struct{ singleFileSourceSet }
 
-var vibeUnifiedInternalPath = regexp.MustCompile(`^unified/[^/]+/(chunks/[0-9a-f]{64}\.json|journal/[0-9]{16}\.jsonl|generations/([0-9]{16}|\.staging-[0-9]{16}-[0-9a-f]{16})/(manifest|runtime-state|projection-state|checkpoint)\.json)$`)
+// Within a unified session directory only CURRENT, meta.json, and journal
+// segments change a parse; generation documents and chunks are immutable
+// once CURRENT names them. Session leases live under active/.
+var vibeNonDataPath = regexp.MustCompile(`^(unified/[^/]+/.+|active(/.*)?)$`)
 
 func (s vibeSourceSet) ChangedPathRelevance(ctx context.Context, req ChangedPathRequest) (ChangedPathRelevance, error) {
 	if err := ctx.Err(); err != nil {
@@ -113,9 +91,7 @@ func (s vibeSourceSet) ChangedPathRelevance(ctx context.Context, req ChangedPath
 		if _, ok := vibeClassifyPath(root, req.Path, true); ok {
 			return ChangedPathDataBearing, nil
 		}
-		// The producer writes immutable generation documents and chunks before
-		// publishing CURRENT. Recovery journal appends do not publish transcripts.
-		if vibeUnifiedInternalPath.MatchString(filepath.ToSlash(rel)) {
+		if vibeNonDataPath.MatchString(filepath.ToSlash(rel)) {
 			return ChangedPathNonData, nil
 		}
 	}
@@ -173,7 +149,7 @@ func vibeWatchRoots(roots []string) []WatchRoot {
 			Path:      root,
 			Recursive: true,
 			IncludeGlobs: []string{
-				"messages.jsonl", "meta.json", "CURRENT",
+				"messages.jsonl", "meta.json", "CURRENT", "[0-9]*.jsonl",
 			},
 			DebounceKey: string(AgentVibe) + ":sessions:" + root,
 		})
@@ -424,10 +400,6 @@ func vibeProviderCapabilities() Capabilities {
 			ToolResultEvents:     CapabilitySupported,
 			AggregateUsageEvents: CapabilitySupported,
 			Model:                CapabilitySupported,
-		},
-		Sync: ProviderSyncSemantics{
-			FingerprintHashInCacheKey:           true,
-			FingerprintHashRequiredForFreshness: true,
 		},
 	}
 }

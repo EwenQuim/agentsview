@@ -156,10 +156,6 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 			FingerprintHashInCacheKey:           true,
 			FingerprintHashRequiredForFreshness: true,
 		},
-		AgentVibe: {
-			FingerprintHashInCacheKey:           true,
-			FingerprintHashRequiredForFreshness: true,
-		},
 		// Grok companion edits can keep the summary's size and mtime, so
 		// freshness depends on the content fingerprint.
 		AgentGrok: {

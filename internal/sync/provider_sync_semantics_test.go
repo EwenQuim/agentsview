@@ -6,8 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -633,7 +631,7 @@ func TestOmnigentDependentSourceExpansionPreservesEngineIDPrefixing(
 		idPrefix: "remote~",
 	}
 
-	expanded, err := engine.expandInheritedMetadataSources(
+	expanded, err := engine.expandOmnigentInheritedMetadataSources(
 		t.Context(), provider, []parser.SourceRef{rootSource},
 	)
 
@@ -642,59 +640,10 @@ func TestOmnigentDependentSourceExpansionPreservesEngineIDPrefixing(
 
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err = engine.expandInheritedMetadataSources(
+	_, err = engine.expandOmnigentInheritedMetadataSources(
 		canceled, provider, []parser.SourceRef{rootSource},
 	)
 	require.ErrorContains(t, err, "list omnigent parent session machines")
-}
-
-func TestVibeDependentSourceExpansionStaysBounded(t *testing.T) {
-	database := openTestDB(t)
-	root := t.TempDir()
-	parentID := "remote~vibe:parent"
-	var resolved []string
-	engine := NewEngine(t.Context(), database, EngineConfig{
-		AgentDirs: map[parser.AgentType][]string{parser.AgentVibe: {root}},
-		Machine:   "local", IDPrefix: "remote~",
-		StoredPathResolver: func(path string) (string, bool) {
-			resolved = append(resolved, path)
-			return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(path, "/remote/"))), true
-		},
-	})
-	t.Cleanup(engine.Close)
-	for _, name := range []string{"parent", "child", "missing", "trashed", "foreign"} {
-		path := filepath.Join(root, "unified", name, "CURRENT")
-		if name != "missing" {
-			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-			require.NoError(t, os.WriteFile(path, []byte(`{"generation":"1"}`), 0o644))
-		}
-		storedPath := "/remote/unified/" + name + "/CURRENT"
-		session := db.Session{ID: "remote~vibe:" + name, Agent: "vibe", FilePath: &storedPath}
-		if name != "parent" {
-			session.ParentSessionID = &parentID
-		}
-		if name == "foreign" {
-			session.Machine = "other"
-		}
-		require.NoError(t, database.UpsertSession(t.Context(), session))
-	}
-	require.NoError(t, database.SoftDeleteSession(t.Context(), "remote~vibe:trashed"))
-	for i := range 200 {
-		path := "/remote/unified/unrelated-" + strconv.Itoa(i) + "/CURRENT"
-		require.NoError(t, database.UpsertSession(t.Context(), db.Session{
-			ID: "remote~vibe:unrelated-" + strconv.Itoa(i), Agent: "vibe", FilePath: &path,
-		}))
-	}
-	provider := engine.sources().providerFactories[parser.AgentVibe].NewProvider(parser.ProviderConfig{Roots: []string{root}})
-	parentPath := filepath.Join(root, "unified", "parent", "CURRENT")
-	parent, found, err := provider.FindSource(t.Context(), parser.FindSourceRequest{StoredFilePath: parentPath})
-	require.NoError(t, err)
-	require.True(t, found)
-	expanded, err := engine.expandInheritedMetadataSources(t.Context(), provider, []parser.SourceRef{parent})
-	require.NoError(t, err)
-	require.Len(t, expanded, 2)
-	assert.Equal(t, filepath.Join(root, "unified", "child", "CURRENT"), providerDiscoveredPath(expanded[1]))
-	assert.ElementsMatch(t, []string{"/remote/unified/child/CURRENT", "/remote/unified/missing/CURRENT"}, resolved)
 }
 
 // TestBaselineFailureDoesNotPromoteSkipCache pins the omnigent-only cache
@@ -853,39 +802,4 @@ func TestBaselineFailureKeepsRowlessCacheForOtherProviders(t *testing.T) {
 	assert.Equal(t, map[string]int64{path + "?complete": 1234},
 		engine.SnapshotSkipCache(),
 		"non-omnigent rowless cache writes stay immediate")
-}
-
-func TestVibeUnifiedHashFreshness(t *testing.T) {
-	for _, tc := range []struct {
-		path, storedHash string
-		want             bool
-	}{
-		{"/sessions/unified/child/CURRENT", "child-inputs", true},
-		{"/sessions/unified/child/CURRENT", "previous-inputs", false},
-		{"/sessions/child/messages.jsonl", "child-inputs", false},
-	} {
-		t.Run(tc.path+tc.storedHash, func(t *testing.T) {
-			assert.Equal(t, tc.want, providerFingerprintMatchesStored(parser.AgentVibe, tc.path, parser.SourceFingerprint{Size: 10, MTimeNS: 200, Hash: "child-inputs"}, 10, 100, tc.storedHash, true))
-		})
-	}
-}
-
-func TestVibeChangedPathForcesOnlyChangedSession(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "unified", "parent")
-	child := filepath.Join(filepath.Dir(parent), "child", "CURRENT")
-	for _, tc := range []struct {
-		name, source, event, kind string
-		want                      bool
-	}{
-		{"parent publication write", child, filepath.Join(parent, "CURRENT"), "write", false},
-		{"parent metadata write", child, filepath.Join(parent, "meta.json"), "write", false},
-		{"child publication write", child, child, "write", true},
-		{"child metadata write", child, filepath.Join(filepath.Dir(child), "meta.json"), "write", true},
-		{"parent metadata removal", child, filepath.Join(parent, "meta.json"), "remove", false},
-		{"child publication removal", child, child, "remove", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, providerChangedPathForceParse(parser.AgentVibe, tc.source, tc.event, tc.kind, parser.ProviderMigrationProviderAuthoritative))
-		})
-	}
 }

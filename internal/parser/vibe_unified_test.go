@@ -2,6 +2,7 @@ package parser
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,20 +27,68 @@ func vibeUnifiedChunkFixture() string {
 ]`
 }
 
+const vibeUnifiedTestGeneration = "0000000000000001"
+
+func vibeUnifiedDigest(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// writeVibeUnifiedPointer publishes a generation. Stored documents end in a
+// newline that the manifest digest excludes.
 func writeVibeUnifiedPointer(t *testing.T, sessionDir, generation string) {
 	t.Helper()
 	manifest, err := os.ReadFile(filepath.Join(sessionDir, "generations", generation, "manifest.json"))
 	require.NoError(t, err)
 	writeSourceFile(t, filepath.Join(sessionDir, "CURRENT"), fmt.Sprintf(
-		`{"store_format":"mistral.vibe.unified-session-store/v1","store_format_minor":8,"session_id":%q,"generation":%q,"snapshot_sequence":1,"manifest_sha256":"%x"}`,
-		filepath.Base(sessionDir), generation, sha256.Sum256(manifest)))
+		`{"generation":%q,"manifest_sha256":%q,"session_id":%q,"snapshot_sequence":1,"store_format":"mistral.vibe.unified-session-store/v1","store_format_minor":8}`+"\n",
+		generation, vibeUnifiedDigest(strings.TrimSuffix(string(manifest), "\n")), filepath.Base(sessionDir)))
+}
+
+// writeVibeUnifiedManifest writes and publishes a manifest whose journal
+// segment starts after snapshot sequence 1.
+func writeVibeUnifiedManifest(t *testing.T, sessionDir, generation, projectionState string) {
+	t.Helper()
+	writeSourceFile(t, filepath.Join(sessionDir, "generations", generation, "manifest.json"),
+		`{"manifest_version":1,"generation":"`+generation+`","session_id":"`+filepath.Base(sessionDir)+`",`+
+			`"projection_state":`+projectionState+`,"snapshot_sequence":1,`+
+			`"recovery_journal_segment":{"path":"journal/0000000000000002.jsonl","first_sequence":2}}`+"\n")
+	writeVibeUnifiedPointer(t, sessionDir, generation)
+}
+
+// setVibeUnifiedTranscript pools entries into chunks named by their digests.
+func setVibeUnifiedTranscript(t *testing.T, sessionDir string, chunks ...string) {
+	t.Helper()
+	names := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		name := vibeUnifiedDigest(chunk)
+		writeSourceFile(t, filepath.Join(sessionDir, "chunks", name+".json"), chunk+"\n")
+		names = append(names, `"`+name+`"`)
+	}
+	writeVibeUnifiedManifest(t, sessionDir, vibeUnifiedTestGeneration, `{"chunks":[`+strings.Join(names, ",")+`]}`)
+}
+
+// writeVibeUnifiedJournal writes digest-chained journal records, given as
+// type and payload pairs, starting at the manifest's first sequence.
+func writeVibeUnifiedJournal(t *testing.T, sessionDir string, records ...[2]string) {
+	t.Helper()
+	var journal strings.Builder
+	previous := "null"
+	for i, record := range records {
+		body := fmt.Sprintf(`{"payload":%s,"previous_record_sha256":%s,"recovery_journal_record_version":1,"sequence":%d,"type":%q}`,
+			record[1], previous, i+2, record[0])
+		digest := vibeUnifiedDigest(body)
+		journal.WriteString(strings.Replace(body, `,"recovery_journal_record_version"`,
+			`,"record_sha256":"`+digest+`","recovery_journal_record_version"`, 1) + "\n")
+		previous = `"` + digest + `"`
+	}
+	writeSourceFile(t, filepath.Join(sessionDir, "journal", "0000000000000002.jsonl"), journal.String())
 }
 
 func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 	t.Helper()
 	sessionDir := filepath.Join(root, "unified", sessionID)
-	gen := "0000000000000001"
-	writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0001.json"), vibeUnifiedChunkFixture())
+	gen := vibeUnifiedTestGeneration
 	writeSourceFile(t, filepath.Join(sessionDir, "meta.json"),
 		`{"session_id":"`+sessionID+`","parent_session_id":null,`+
 			`"start_time":"2026-09-28T13:23:23.600000+00:00",`+
@@ -47,10 +96,6 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 			`"git_commit":null,"git_branch":null,"title":null,`+
 			`"environment":{"working_directory":"/workspace/my-repo"}}`)
 	genDir := filepath.Join(sessionDir, "generations", gen)
-	writeSourceFile(t, filepath.Join(genDir, "manifest.json"),
-		`{"manifest_version":1,"generation":"`+gen+`","session_id":"`+sessionID+`",`+
-			`"projection_state":{"chunks":["cafe0001"]},`+
-			`"checkpoint":{"chunks":[]},"snapshot_sequence":1}`)
 	writeSourceFile(t, filepath.Join(genDir, "projection-state.json"),
 		`{"projection_state_version":1,"session_id":"`+sessionID+`","snapshot":{`+
 			`"format":"harness.public-session-state/v1",`+
@@ -59,13 +104,14 @@ func writeVibeUnifiedSession(t *testing.T, root, sessionID string) string {
 			`"tokenUsage":{"cachedInputTokens":500,"inputTokens":1500,`+
 			`"outputTokens":200,"totalTokens":1700},`+
 			`"contextUsage":{"cachedInputTokens":400,"inputTokens":1400,`+
-			`"outputTokens":50,"totalTokens":1450}}}}`)
+			`"outputTokens":50,"totalTokens":1450}}}}`+"\n")
 	writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"),
 		`{"runtime_state_version":3,"identity":{"depth":0,"kind":"root","parent_session_id":null,`+
 			`"root_session_id":"`+sessionID+`","session_id":"`+sessionID+`"},`+
 			`"session_metadata":{"active_model":"mistral-medium-3.5",`+
-			`"cwd":"/workspace/my-repo"}}`)
-	writeVibeUnifiedPointer(t, sessionDir, gen)
+			`"cwd":"/workspace/my-repo"}}`+"\n")
+	writeVibeUnifiedJournal(t, sessionDir)
+	setVibeUnifiedTranscript(t, sessionDir, vibeUnifiedChunkFixture())
 	return sessionDir
 }
 
@@ -73,19 +119,16 @@ func TestVibeUnifiedParseSourceSize(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 	parentDir := writeVibeUnifiedSession(t, root, "parent")
-	gen := "0000000000000001"
+	gen := vibeUnifiedTestGeneration
 	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"},"session_metadata":{}}`)
-	writeSourceFile(t, filepath.Join(sessionDir, "generations", gen, "manifest.json"), `{"manifest_version":1,"projection_state":{"chunks":["cafe0001","cafe0002"]}}`)
-	writeVibeUnifiedPointer(t, sessionDir, gen)
-	answer := "second chunk answer"
-	writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0002.json"), `[{"type":"message","role":"assistant","content":[{"text":"`+answer+`"}]}]`)
+	second := `[{"type":"message","role":"assistant","content":[{"text":"second chunk answer"}]}]`
+	setVibeUnifiedTranscript(t, sessionDir, vibeUnifiedChunkFixture(), second)
+	writeVibeUnifiedJournal(t, sessionDir, [2]string{"projection_delta", `{"delta":[],"watermark":1}`})
 	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
 	require.True(t, ok)
 	source, found, err := provider.FindSource(t.Context(), FindSourceRequest{StoredFilePath: filepath.Join(sessionDir, "CURRENT")})
 	require.NoError(t, err)
 	require.True(t, found)
-	fingerprint, err := provider.Fingerprint(t.Context(), source)
-	require.NoError(t, err)
 
 	var want int64
 	for _, path := range []string{
@@ -93,8 +136,12 @@ func TestVibeUnifiedParseSourceSize(t *testing.T) {
 		filepath.Join(sessionDir, "generations", gen, "manifest.json"),
 		filepath.Join(sessionDir, "generations", gen, "projection-state.json"),
 		filepath.Join(sessionDir, "generations", gen, "runtime-state.json"),
-		filepath.Join(sessionDir, "chunks", "cafe0001.json"), filepath.Join(sessionDir, "chunks", "cafe0002.json"),
-		filepath.Join(parentDir, "CURRENT"), filepath.Join(parentDir, "generations", gen, "runtime-state.json"),
+		filepath.Join(sessionDir, "chunks", vibeUnifiedDigest(vibeUnifiedChunkFixture())+".json"),
+		filepath.Join(sessionDir, "chunks", vibeUnifiedDigest(second)+".json"),
+		filepath.Join(sessionDir, "journal", "0000000000000002.jsonl"),
+		filepath.Join(parentDir, "CURRENT"),
+		filepath.Join(parentDir, "generations", gen, "manifest.json"),
+		filepath.Join(parentDir, "generations", gen, "runtime-state.json"),
 	} {
 		info, err := os.Stat(path)
 		require.NoError(t, err)
@@ -104,9 +151,6 @@ func TestVibeUnifiedParseSourceSize(t *testing.T) {
 	size, err := provider.(ParseSourceSizer).ParseSourceSize(t.Context(), source)
 	require.NoError(t, err)
 	assert.Equal(t, want, size)
-	after, err := provider.Fingerprint(t.Context(), source)
-	require.NoError(t, err)
-	assert.Equal(t, fingerprint, after)
 }
 
 func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
@@ -123,9 +167,8 @@ func TestVibeUnifiedProviderParseInlineHistory(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
-			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
-			writeSourceFile(t, filepath.Join(genDir, "manifest.json"), `{"manifest_version":1,"projection_state":`+tc.projectionManifest+`}`)
-			writeVibeUnifiedPointer(t, sessionDir, "0000000000000001")
+			genDir := filepath.Join(sessionDir, "generations", vibeUnifiedTestGeneration)
+			writeVibeUnifiedManifest(t, sessionDir, vibeUnifiedTestGeneration, tc.projectionManifest)
 			writeSourceFile(t, filepath.Join(genDir, "projection-state.json"), `{"snapshot":{"history":{"entries":[
 				{"type":"message","role":"user","content":[{"text":"inline question"}]},
 				{"type":"message","role":"assistant","content":[{"text":"inline answer"}]}
@@ -184,6 +227,7 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 	for _, changedPath := range []string{
 		anchor,
 		filepath.Join(sessionDir, "meta.json"),
+		filepath.Join(sessionDir, "journal", "0000000000000002.jsonl"),
 	} {
 		changed, err := provider.SourcesForChangedPath(t.Context(), ChangedPathRequest{
 			Path: changedPath, EventKind: "write", WatchRoot: root,
@@ -193,26 +237,32 @@ func TestVibeUnifiedProviderSourceMethods(t *testing.T) {
 		assert.Equal(t, anchor, changed[0].DisplayPath)
 	}
 
+	// Every publication also writes temporary files and generation
+	// directories; none of them may fall back to a full provider scan.
 	for _, tc := range []struct {
 		path string
 		want ChangedPathRelevance
 	}{
-		{"generations/0000000000000001/manifest.json", ChangedPathNonData},
-		{"generations/0000000000000001/runtime-state.json", ChangedPathNonData},
-		{"generations/0000000000000001/projection-state.json", ChangedPathNonData},
-		{"generations/0000000000000001/checkpoint.json", ChangedPathNonData},
-		{"generations/.staging-0000000000000001-0123456789abcdef/runtime-state.json", ChangedPathNonData},
-		{"chunks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", ChangedPathNonData},
-		{"journal/0000000000000001.jsonl", ChangedPathNonData},
-		{"generations/0000000000000001/unknown.json", ChangedPathUnclassified},
-		{"chunks/unknown.txt", ChangedPathUnclassified},
-		{"chunks/unknown.json", ChangedPathUnclassified},
-		{"journal/unknown.jsonl", ChangedPathUnclassified},
+		{"unified/" + vibeUnifiedSessionID + "/CURRENT", ChangedPathDataBearing},
+		{"unified/" + vibeUnifiedSessionID + "/meta.json", ChangedPathDataBearing},
+		{"unified/" + vibeUnifiedSessionID + "/journal/0000000000000002.jsonl", ChangedPathDataBearing},
+		{"unified/" + vibeUnifiedSessionID + "/.CURRENT.0123456789abcdef.tmp", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/tmpa1b2c3d4.json.tmp", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/generations/0000000000000001", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/generations/0000000000000001/manifest.json", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/generations/.staging-0000000000000002-0123456789abcdef", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/chunks", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/chunks/" + strings.Repeat("a", 64) + ".json", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/chunks/." + strings.Repeat("a", 64) + ".json.0123456789abcdef.tmp", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/journal", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID + "/quarantine/0000000000000001.jsonl", ChangedPathNonData},
+		{"active/" + vibeUnifiedSessionID + ".lock", ChangedPathNonData},
+		{"unified/" + vibeUnifiedSessionID, ChangedPathUnclassified},
 		{"unknown.json", ChangedPathUnclassified},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			for _, kind := range []string{"write", "remove"} {
-				relevance, err := ResolveChangedPathRelevance(t.Context(), provider, ChangedPathRequest{Path: filepath.Join(sessionDir, filepath.FromSlash(tc.path)), EventKind: kind, WatchRoot: root})
+				relevance, err := ResolveChangedPathRelevance(t.Context(), provider, ChangedPathRequest{Path: filepath.Join(root, filepath.FromSlash(tc.path)), EventKind: kind, WatchRoot: root})
 				require.NoError(t, err)
 				assert.Equal(t, tc.want, relevance)
 			}
@@ -332,7 +382,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, provider, source, fingerprint := fixture(t)
 			entry := strings.TrimSuffix(tc.entry, "}") + `,"type":"message","role":"user","id":"prompt"}`
-			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), "["+entry+"]")
+			setVibeUnifiedTranscript(t, filepath.Join(root, "unified", vibeUnifiedSessionID), "["+entry+"]")
 			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
@@ -418,6 +468,30 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 			wantResult: `[{"type":"text","text":"screenshot"},{"type":"input_image","image_url":"data:image/png;base64,AA=="},{"type":"text","text":"resource output"}]`,
 		},
 		{
+			name:       "bash structured output",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"output":{"content":[],"structured_content":{"command":"ls","returncode":1,"stderr":"ls: missing","stdout":"file-a\n","was_truncated":false},"type":"success"},"outputText":"","status":"completed"}`,
+			wantResult: "file-a\nls: missing",
+		},
+		{
+			name:       "read_file structured output",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"output":{"content":[],"structured_content":{"content":"package main\n","file_size_bytes":13,"lines_read":1,"offset":0,"path":"main.go","returned_bytes":13,"was_truncated":false},"type":"success"},"outputText":"","status":"completed"}`,
+			wantResult: "package main\n",
+		},
+		{
+			name:       "write_file structured output",
+			before:     `"state":{"output":{"content":[{"text":"file-a\nfile-b","type":"text"}],"type":"success"},"status":"completed"}`,
+			after:      `"state":{"output":{"content":[],"structured_content":{"bytes_written":5,"file_existed":false,"path":"notes.txt"},"type":"success"},"outputText":"","status":"completed"}`,
+			wantResult: `{"bytes_written":5,"file_existed":false,"path":"notes.txt"}`,
+		},
+		{
+			name:       "content blocks precede structured output",
+			before:     `"type":"success"},"status":"completed"`,
+			after:      `"structured_content":{"stdout":"unused"},"type":"success"},"status":"completed"`,
+			wantResult: "file-a\nfile-b",
+		},
+		{
 			name:      "null input",
 			before:    `"input":{"command":"ls"}`,
 			after:     `"input":null`,
@@ -467,7 +541,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, provider, source, fingerprint := fixture(t)
 			chunk := strings.Replace(vibeUnifiedChunkFixture(), tc.before, tc.after, 1)
-			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), chunk)
+			setVibeUnifiedTranscript(t, filepath.Join(root, "unified", vibeUnifiedSessionID), chunk)
 			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
@@ -581,7 +655,7 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, provider, source, fingerprint := fixture(t)
-			writeSourceFile(t, filepath.Join(root, "unified", vibeUnifiedSessionID, "chunks", "cafe0001.json"), tc.entries)
+			setVibeUnifiedTranscript(t, filepath.Join(root, "unified", vibeUnifiedSessionID), tc.entries)
 			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
 			require.NoError(t, err)
 			require.Len(t, outcome.Results, 1)
@@ -619,18 +693,26 @@ func TestVibeUnifiedProviderParse(t *testing.T) {
 		assert.Zero(t, outcome.Results[0].Result.Session.PeakContextTokens)
 	})
 
+	manifestPath := "generations/" + vibeUnifiedTestGeneration + "/manifest.json"
+	recordPrefix := `{"payload":{"delta":[],"watermark":1},"previous_record_sha256":null,"record_sha256":"`
 	for _, tc := range []struct {
-		name, path, document, wantError string
+		name, path, document string
+		republish            bool
+		wantError            string
 	}{
-		{"unsafe generation", "CURRENT", `{"generation":"../x"}`, "invalid generation"},
-		{"unsafe chunk", "generations/0000000000000001/manifest.json", `{"projection_state":{"chunks":["../x"]}}`, "invalid Vibe unified chunk hash"},
+		{"unsafe generation", "CURRENT", `{"generation":"../x"}`, false, "invalid generation"},
+		{"unsafe chunk", manifestPath, `{"projection_state":{"chunks":["../x"]}}`, true, "invalid Vibe unified chunk hash"},
+		{"short chunk name", manifestPath, `{"projection_state":{"chunks":["cafe0001"]}}`, true, "invalid Vibe unified chunk hash"},
+		{"unsafe journal", manifestPath, `{"projection_state":{"chunks":null},"recovery_journal_segment":{"path":"../x.jsonl","first_sequence":2}}`, true, "invalid Vibe unified journal segment"},
+		{"manifest not published", manifestPath, `{"projection_state":{"chunks":null}}`, false, "manifest digest does not match"},
+		{"journal digest mismatch", "journal/0000000000000002.jsonl", recordPrefix + strings.Repeat("0", 64) + `","recovery_journal_record_version":1,"sequence":2,"type":"projection_delta"}` + "\n", false, "breaks the digest chain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 			writeSourceFile(t, filepath.Join(sessionDir, tc.path), tc.document)
-			if tc.path != "CURRENT" {
-				writeVibeUnifiedPointer(t, sessionDir, "0000000000000001")
+			if tc.republish {
+				writeVibeUnifiedPointer(t, sessionDir, vibeUnifiedTestGeneration)
 			}
 			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
 			require.True(t, ok)
@@ -694,9 +776,8 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 
 			if tc.parentRuntime != "" {
 				parentDir := writeVibeUnifiedSession(t, root, parentID)
-				writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "manifest.json"), `{"manifest_version":1,"generation":"0000000000000002","session_id":"`+parentID+`","snapshot_sequence":1}`)
 				writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "runtime-state.json"), tc.parentRuntime)
-				writeVibeUnifiedPointer(t, parentDir, "0000000000000002")
+				writeVibeUnifiedManifest(t, parentDir, "0000000000000002", `{"chunks":null}`)
 			}
 
 			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
@@ -727,29 +808,98 @@ func TestVibeUnifiedProviderParseSubagentSession(t *testing.T) {
 			assert.Equal(t, tc.wantModel, result.UsageEvents[0].Model)
 		})
 	}
+}
 
-	// Parent publications change the dependent fingerprint without changing child bytes.
-	root := t.TempDir()
-	childDir := writeVibeUnifiedSession(t, root, "child")
-	parentDir := writeVibeUnifiedSession(t, root, "parent")
-	writeSourceFile(t, filepath.Join(childDir, "generations", "0000000000000001", "runtime-state.json"), `{"runtime_state_version":3,"identity":{"parent_session_id":"parent"},"session_metadata":{}}`)
-	provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
-	require.True(t, ok)
-	source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: "child"})
-	require.NoError(t, err)
-	require.True(t, found)
-	fingerprint, err := provider.Fingerprint(t.Context(), source)
-	require.NoError(t, err)
-	writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "manifest.json"), `{"manifest_version":1,"generation":"0000000000000002","session_id":"parent","snapshot_sequence":1}`)
-	writeSourceFile(t, filepath.Join(parentDir, "generations", "0000000000000002", "runtime-state.json"), `{"runtime_state_version":3,"session_metadata":{"active_model":"mistral-large-2411"}}`)
-	writeVibeUnifiedPointer(t, parentDir, "0000000000000002")
-	parentTime := time.Unix(2_000_000_000, 0)
-	require.NoError(t, os.Chtimes(filepath.Join(parentDir, "CURRENT"), parentTime, parentTime))
-	updatedFingerprint, err := provider.Fingerprint(t.Context(), source)
-	require.NoError(t, err)
-	assert.NotEqual(t, fingerprint.Hash, updatedFingerprint.Hash)
-	assert.Equal(t, fingerprint.Size, updatedFingerprint.Size)
-	assert.Equal(t, int64(2_000_000_000_000_000_000), updatedFingerprint.MTimeNS)
+// A running turn exists only in the journal until the session settles.
+func TestVibeUnifiedProviderParseJournal(t *testing.T) {
+	envelope := `{"op":"set_envelope","state":{"history":{"entries":[]},"session":{"createdAt":1790601803600,"title":"Journaled title","updatedAt":1790602400000,` +
+		`"tokenUsage":{"cachedInputTokens":600,"inputTokens":3000,"outputTokens":400},"contextUsage":{"inputTokens":2000,"outputTokens":100}}}}`
+	running := `{"type":"effect","id":"effect-2","turnId":"turn-2","createdAt":1790602390000,"detail":{"kind":"tool","toolName":"file_system.bash","input":{"command":"make"}},"state":{"status":"running","outputText":""}}`
+	for _, tc := range []struct {
+		name    string
+		records [][2]string
+		check   func(t *testing.T, result ParseResult)
+	}{
+		{
+			name: "deltas advance the generation",
+			records: [][2]string{
+				{"projection_delta", `{"delta":[` +
+					`{"op":"append_entry","entry":{"type":"message","id":"user-2","role":"user","turnId":"turn-2","content":[{"type":"text","text":"follow-up"}]}},` +
+					`{"op":"append_entry","entry":` + running + `},` +
+					`{"op":"append_entry","entry":{"type":"effect","id":"effect-3","turnId":"turn-2","detail":{"kind":"tool","toolName":"file_system.read_file"},"state":{"status":"running"}}},` +
+					envelope + `],"watermark":2}`},
+				{"command_reserved", `{"client_command_id":"command-1"}`},
+				{"projection_delta", `{"delta":[` +
+					`{"op":"replace_entry","id":"effect-2","entry":` + strings.Replace(running, `"state":{"status":"running","outputText":""}`, `"state":{"status":"completed","output":{"content":[],"structured_content":{"stdout":"built"},"type":"success"},"outputText":""}`, 1) + `},` +
+					`{"op":"remove_entry","id":"effect-3"}],"watermark":3}`},
+			},
+			check: func(t *testing.T, result ParseResult) {
+				t.Helper()
+				messages := result.Messages
+				require.Len(t, messages, 5)
+				assert.Equal(t, "follow-up", messages[3].Content)
+				require.Len(t, messages[4].ToolCalls, 1)
+				call := messages[4].ToolCalls[0]
+				assert.Equal(t, "effect-2", call.ToolUseID)
+				require.Len(t, call.ResultEvents, 2)
+				assert.Equal(t, "completed", call.ResultEvents[1].Status)
+				assert.Equal(t, "built", call.ResultEvents[1].Content)
+				assert.Equal(t, 2, result.Session.UserMessageCount)
+				assert.Equal(t, "unified question", result.Session.FirstMessage)
+				assert.Equal(t, "Journaled title", result.Session.SessionName)
+				assert.Equal(t, 2100, result.Session.PeakContextTokens)
+				require.Len(t, result.UsageEvents, 1)
+				assert.Equal(t, 2400, result.UsageEvents[0].InputTokens)
+				assert.Equal(t, 600, result.UsageEvents[0].CacheReadInputTokens)
+				assert.Equal(t, 400, result.UsageEvents[0].OutputTokens)
+			},
+		},
+		{
+			name: "full snapshot record",
+			records: [][2]string{{"projection_advanced", `{"snapshot":{"history":{"entries":[` +
+				`{"type":"message","id":"only","role":"user","content":[{"type":"text","text":"replaced history"}]}]},"session":{}},"watermark":2}`}},
+			check: func(t *testing.T, result ParseResult) {
+				t.Helper()
+				require.Len(t, result.Messages, 1)
+				assert.Equal(t, "replaced history", result.Messages[0].Content)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
+			writeVibeUnifiedJournal(t, sessionDir, tc.records...)
+			journalPath := filepath.Join(sessionDir, "journal", "0000000000000002.jsonl")
+			// An append still being written has no newline yet.
+			journal, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = journal.WriteString(`{"payload":{"delta":[{"op":"remove_entry","id":"e1"}]`)
+			require.NoError(t, err)
+			require.NoError(t, journal.Close())
+
+			provider, ok := NewProvider(AgentVibe, ProviderConfig{Roots: []string{root}})
+			require.True(t, ok)
+			source, found, err := provider.FindSource(t.Context(), FindSourceRequest{RawSessionID: vibeUnifiedSessionID})
+			require.NoError(t, err)
+			require.True(t, found)
+			fingerprint, err := provider.Fingerprint(t.Context(), source)
+			require.NoError(t, err)
+			outcome, err := provider.Parse(t.Context(), ParseRequest{Source: source, Fingerprint: fingerprint})
+			require.NoError(t, err)
+			require.Len(t, outcome.Results, 1)
+			tc.check(t, outcome.Results[0].Result)
+
+			// Completing the append changes the fingerprint.
+			journal, err = os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = journal.WriteString("\n")
+			require.NoError(t, err)
+			require.NoError(t, journal.Close())
+			updated, err := provider.Fingerprint(t.Context(), source)
+			require.NoError(t, err)
+			assert.NotEqual(t, fingerprint.Hash, updated.Hash)
+		})
+	}
 }
 
 func TestVibeUnifiedProviderParseLineage(t *testing.T) {
@@ -765,7 +915,7 @@ func TestVibeUnifiedProviderParseLineage(t *testing.T) {
 			sessionDir := writeVibeUnifiedSession(t, root, vibeUnifiedSessionID)
 			genDir := filepath.Join(sessionDir, "generations", "0000000000000001")
 			writeSourceFile(t, filepath.Join(genDir, "runtime-state.json"), `{"runtime_state_version":3,"identity":{"kind":"`+tc.kind+`","parent_session_id":"legacy-parent"}`+tc.provenance+`}`)
-			writeSourceFile(t, filepath.Join(sessionDir, "chunks", "cafe0001.json"), `[
+			setVibeUnifiedTranscript(t, sessionDir, `[
 				{"type":"message","id":"imported-1","role":"user","content":[{"text":"old question"}]},
 				{"type":"message","id":"imported-2","role":"assistant","content":[{"text":"old answer"}]},
 				{"type":"message","id":"new-1","role":"user","content":[{"text":"new question"}]},
@@ -828,10 +978,9 @@ func TestVibeUnifiedVersions(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			require.NoError(t, err)
 			content := string(raw)
-			for _, key := range []string{`"store_format":"mistral.vibe.unified-session-store/v1",`, `"store_format_minor":8,`, `"manifest_version":1,`, `"projection_state_version":1,`, `"runtime_state_version":3,`} {
-				content = strings.ReplaceAll(content, key, "")
+			for _, key := range []string{`"store_format":"mistral.vibe.unified-session-store/v1"`, `"store_format_minor":8`, `"manifest_version":1`, `"projection_state_version":1`, `"runtime_state_version":3`} {
+				content = strings.ReplaceAll(strings.ReplaceAll(content, key+",", ""), ","+key, "")
 			}
-			content = strings.ReplaceAll(content, ",}", "}")
 			writeSourceFile(t, path, "{"+tc.prefix+content[1:])
 			if tc.file == "manifest.json" {
 				writeVibeUnifiedPointer(t, dir, "0000000000000001")
